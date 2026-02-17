@@ -4,6 +4,7 @@ const inputEl = document.getElementById('chat-input');
 const sendBtn = document.getElementById('send-btn');
 
 const KEY_UUID = 'career_uuid';
+const API_BASE = window.location.pathname.includes('/public/') ? '../api/' : 'api/';
 let userId = null;
 let streaming = false;
 
@@ -37,7 +38,7 @@ function addMessage(role, text) {
 }
 
 async function initUser() {
-  const res = await fetch('../api/init.php', {
+  const res = await fetch(`${API_BASE}init.php`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ uuid: getOrCreateUuid(), fingerprint: getFingerprint() })
@@ -51,7 +52,7 @@ async function sendMessage(text) {
   sendBtn.disabled = true;
   const assistantEl = addMessage('assistant', '');
 
-  const res = await fetch('../api/chat.php', {
+  const res = await fetch(`${API_BASE}chat.php`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ user_id: userId, user_message: text, client_timestamp: new Date().toISOString() })

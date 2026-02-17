@@ -84,7 +84,7 @@ $maskedKey = $settings['openai_api_key'] !== '' ? str_repeat('•', max(8, strle
     </form>
 
     <div class="links">
-        <a href="/index.html">← Powrót do czatu</a>
+        <a href="index.php">← Powrót do czatu</a>
     </div>
 </div>
 </body>
