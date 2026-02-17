@@ -1,0 +1,202 @@
+{
+  "stages": [
+    {
+      "stage_id": "S1",
+      "title": "Poznajmy Ciebie – baza",
+      "groups": [
+        {
+          "group_id": "G1",
+          "title": "Start i podstawy",
+          "min_points_to_advance": 16,
+          "topics": [
+            {
+              "topic_id": "S1G1_T1_NAME",
+              "title": "Imię i forma zwracania się",
+              "weight": 6,
+              "required": true,
+              "type": "question_goal",
+              "goal": "Poznaj imię użytkownika i preferowaną formę zwracania się.",
+              "micro_prompt": "Zapytaj krótko i naturalnie. Jeśli poda imię, dopytaj czy woli 'ty' czy 'Pan/Pani' oraz jak chcesz się do niego zwracać.",
+              "fact_key": "name",
+              "record_on_close": true,
+              "confirmation_required_on_change": true
+            },
+            {
+              "topic_id": "S1G1_T2_SCHOOL",
+              "title": "Profil szkoły i ulubione przedmioty",
+              "weight": 5,
+              "required": true,
+              "type": "question_goal",
+              "goal": "Ustal profil klasy/szkoły oraz 2-3 przedmioty, które najbardziej lubi.",
+              "micro_prompt": "Nie rób ankiety. Jedno pytanie + krótkie dopytanie.",
+              "fact_key": "school_profile",
+              "record_on_close": true,
+              "confirmation_required_on_change": false
+            },
+            {
+              "topic_id": "S1G1_T3_INTERESTS",
+              "title": "Zainteresowania i hobby",
+              "weight": 5,
+              "required": true,
+              "type": "question_goal",
+              "goal": "Ustal 2-4 zainteresowania, które sprawiają mu frajdę i które robi regularnie.",
+              "micro_prompt": "Jeśli user mówi ogólnie, poproś o konkret: co dokładnie robi i jak często.",
+              "fact_key": "interests",
+              "record_on_close": true,
+              "confirmation_required_on_change": false
+            },
+            {
+              "topic_id": "S1G1_T4_STRENGTHS",
+              "title": "Mocne strony (własnym językiem)",
+              "weight": 4,
+              "required": false,
+              "type": "question_goal",
+              "goal": "Ustal 1-3 mocne strony w formie przykładów sytuacji.",
+              "micro_prompt": "Dopytaj o przykład z życia szkolnego lub hobby.",
+              "record_on_close": true
+            },
+            {
+              "topic_id": "S1G1_T5_INTERNAL",
+              "title": "Wspierająca wstawka",
+              "weight": 1,
+              "required": false,
+              "type": "internal_comment",
+              "goal": "Wzmocnij rozmowę, zachęć i obniż napięcie. Bez zbierania danych.",
+              "micro_prompt": "Powiedz 1-2 zdania wsparcia i przejdź płynnie dalej. Nie zadawaj nowego pytania jako głównego celu.",
+              "record_on_close": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "stage_id": "S2",
+      "title": "Preferencje pracy i wartości",
+      "groups": [
+        {
+          "group_id": "G2",
+          "title": "Jak lubisz działać",
+          "min_points_to_advance": 15,
+          "topics": [
+            {
+              "topic_id": "S2G2_T1_ENV",
+              "title": "Środowisko pracy",
+              "weight": 5,
+              "required": true,
+              "type": "question_goal",
+              "goal": "Ustal, czy woli ludzi/zespoły czy zadania solo, oraz czy woli komputer/teren/ruch.",
+              "micro_prompt": "Użyj prostych opcji: 'bardziej z ludźmi czy bardziej sam', 'bardziej przy komputerze czy bardziej w ruchu'.",
+              "record_on_close": true
+            },
+            {
+              "topic_id": "S2G2_T2_VALUES",
+              "title": "Wartości: stabilność, pieniądze, sens, prestiż",
+              "weight": 6,
+              "required": true,
+              "type": "question_goal",
+              "goal": "Ustal top 2 wartości, które są dla niego najważniejsze w przyszłej pracy.",
+              "micro_prompt": "Daj 4-5 przykładów wartości i poproś o wybór dwóch + dlaczego.",
+              "fact_key": "work_values",
+              "record_on_close": true
+            },
+            {
+              "topic_id": "S2G2_T3_STYLE",
+              "title": "Styl pracy i nauki",
+              "weight": 4,
+              "required": false,
+              "type": "question_goal",
+              "goal": "Ustal, czy woli krótkie zadania czy długie projekty, oraz czy lubi plan czy improwizację.",
+              "micro_prompt": "Jedno pytanie, potem doprecyzowanie.",
+              "record_on_close": true
+            },
+            {
+              "topic_id": "S2G2_T4_AVOID",
+              "title": "Czego nie lubisz / czego chcesz unikać",
+              "weight": 4,
+              "required": false,
+              "type": "question_goal",
+              "goal": "Ustal 1-3 rzeczy, których zdecydowanie nie chce w pracy (np. monotonia, stres, wystąpienia).",
+              "micro_prompt": "Nie drąż traum. Konkretnie i lekko.",
+              "record_on_close": true
+            },
+            {
+              "topic_id": "S2G2_T5_INTERNAL",
+              "title": "Wspierająca wstawka",
+              "weight": 1,
+              "required": false,
+              "type": "internal_comment",
+              "goal": "Podsumuj i dodaj otuchy: że to normalne nie wiedzieć i że robicie proces krok po kroku.",
+              "micro_prompt": "1-2 zdania, bez pytania celu.",
+              "record_on_close": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "stage_id": "S3",
+      "title": "Kierunki i plan na kolejne kroki",
+      "groups": [
+        {
+          "group_id": "G3",
+          "title": "Decyzje i eksperymenty",
+          "min_points_to_advance": 16,
+          "topics": [
+            {
+              "topic_id": "S3G3_T1_FIELDS",
+              "title": "Obszary zawodowe do rozważenia",
+              "weight": 6,
+              "required": true,
+              "type": "question_goal",
+              "goal": "Wygeneruj 2-4 obszary (nie konkretne zawody) pasujące do preferencji; sprawdź reakcję użytkownika.",
+              "micro_prompt": "Podaj obszary + 1 zdanie uzasadnienia + zapytaj, które brzmią najlepiej.",
+              "record_on_close": true
+            },
+            {
+              "topic_id": "S3G3_T2_PARENTS",
+              "title": "Wpływ rodziców / ich opinia",
+              "weight": 5,
+              "required": true,
+              "type": "question_goal",
+              "goal": "Ustal, co rodzice sądzą o wyborze zawodu i czy wywierają presję.",
+              "micro_prompt": "Delikatnie. Pytanie ma być bezpieczne i nieoceniające.",
+              "fact_key": "parents_opinion",
+              "record_on_close": true,
+              "confirmation_required_on_change": true
+            },
+            {
+              "topic_id": "S3G3_T3_NEXT_STEPS",
+              "title": "Plan mikro-kroków na 2 tygodnie",
+              "weight": 5,
+              "required": true,
+              "type": "question_goal",
+              "goal": "Ustal 2-3 konkretne działania testujące kierunek (np. rozmowa, mini-projekt, dzień obserwacji).",
+              "micro_prompt": "Zaproponuj 3 opcje i poproś o wybór dwóch.",
+              "record_on_close": true
+            },
+            {
+              "topic_id": "S3G3_T4_EDU_PATH",
+              "title": "Ścieżka edukacyjna (minimalnie)",
+              "weight": 4,
+              "required": false,
+              "type": "question_goal",
+              "goal": "Ustal, czy myśli o studiach/technikach/kursach i jaką ma elastyczność.",
+              "micro_prompt": "Nie rób wykładu. Krótko i konkretnie.",
+              "record_on_close": true
+            },
+            {
+              "topic_id": "S3G3_T5_INTERNAL",
+              "title": "Wspierająca wstawka",
+              "weight": 1,
+              "required": false,
+              "type": "internal_comment",
+              "goal": "Domknij etap emocjonalnie: pochwal za konkret, uspokój i utrzymaj motywację.",
+              "micro_prompt": "1-2 zdania, bez zbierania danych.",
+              "record_on_close": false
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
