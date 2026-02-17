@@ -14,11 +14,99 @@ const promptBoxEl = document.getElementById('current-prompt-box');
 const copyPromptBtnEl = document.getElementById('copy-prompt-btn');
 const historyLoadWrapEl = document.getElementById('history-load-wrap');
 const loadFullHistoryBtnEl = document.getElementById('load-full-history-btn');
+const apiStatusDotEl = document.getElementById('api-status-dot');
+const apiStatusLabelEl = document.getElementById('api-status-label');
+const apiStatusTooltipEl = document.getElementById('api-status-tooltip');
 
 const KEY_UUID = 'career_uuid';
 const API_BASE = window.location.pathname.includes('/public/') ? '../api/' : 'api/';
 let userId = null;
 let streaming = false;
+
+function setApiStatus(ok, label, tooltip) {
+  if (!apiStatusDotEl || !apiStatusLabelEl || !apiStatusTooltipEl) return;
+
+  apiStatusDotEl.classList.remove('api-status-ok', 'api-status-error', 'api-status-unknown');
+  apiStatusDotEl.classList.add(ok ? 'api-status-ok' : 'api-status-error');
+  apiStatusLabelEl.textContent = label;
+  apiStatusTooltipEl.title = tooltip;
+}
+
+function withTimeout(ms, promiseFactory) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`timeout after ${ms}ms`)), ms);
+    Promise.resolve()
+      .then(() => promiseFactory())
+      .then((val) => {
+        clearTimeout(timer);
+        resolve(val);
+      })
+      .catch((err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+  });
+}
+
+async function diagnoseApiConnection() {
+  const report = [];
+  let ok = true;
+
+  report.push(`time: ${new Date().toISOString()}`);
+  report.push(`online: ${navigator.onLine}`);
+  report.push(`api_base: ${API_BASE}`);
+
+  if (!navigator.onLine) {
+    ok = false;
+    report.push('browser_offline: true');
+  }
+
+  try {
+    const healthRes = await withTimeout(4000, () => fetch(`${API_BASE}health.php`, { cache: 'no-store' }));
+    report.push(`health_status: ${healthRes.status}`);
+    if (!healthRes.ok) {
+      ok = false;
+      report.push('health_ok: false');
+    } else {
+      const healthJson = await healthRes.json().catch(() => null);
+      report.push(`health_ok: ${Boolean(healthJson?.ok)}`);
+      if (!healthJson?.ok) ok = false;
+    }
+  } catch (e) {
+    ok = false;
+    report.push(`health_error: ${e?.message || String(e)}`);
+  }
+
+  try {
+    const initPayload = { uuid: getOrCreateUuid(), fingerprint: getFingerprint() };
+    const initRes = await withTimeout(5000, () => fetch(`${API_BASE}init.php`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(initPayload)
+    }));
+    report.push(`init_status: ${initRes.status}`);
+    if (!initRes.ok) {
+      ok = false;
+    } else {
+      const initJson = await initRes.json().catch(() => null);
+      if (!initJson?.user_id) {
+        ok = false;
+        report.push('init_user_id: missing');
+      } else {
+        report.push('init_user_id: present');
+      }
+    }
+  } catch (e) {
+    ok = false;
+    report.push(`init_error: ${e?.message || String(e)}`);
+  }
+
+  if (ok) {
+    setApiStatus(true, 'API działa', report.join('\n'));
+  } else {
+    setApiStatus(false, 'Brak połączenia z API', report.join('\n'));
+  }
+}
 
 function uuidv4() {
   return crypto.randomUUID ? crypto.randomUUID() : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
@@ -199,5 +287,7 @@ copyPromptBtnEl?.addEventListener('click', async () => {
 initUser().then(async () => {
   await loadChatHistory(false);
   await refreshStatePanel();
+  await diagnoseApiConnection();
   setInterval(refreshStatePanel, 4000);
+  setInterval(diagnoseApiConnection, 8000);
 });

@@ -50,6 +50,11 @@ declare(strict_types=1);
 
   <main class="chat-shell">
     <h1>Doradca kariery</h1>
+    <div class="api-status-wrap">
+      <span id="api-status-dot" class="api-status-dot api-status-unknown" aria-hidden="true"></span>
+      <span id="api-status-label" class="api-status-label">Sprawdzam połączenie z API…</span>
+      <span id="api-status-tooltip" class="api-status-tooltip" title="Trwa diagnoza połączenia.">ⓘ</span>
+    </div>
     <div id="history-load-wrap" class="history-load-wrap" hidden>
       <button id="load-full-history-btn" type="button" class="load-history-btn">Wczytaj całość rozmowy</button>
     </div>
