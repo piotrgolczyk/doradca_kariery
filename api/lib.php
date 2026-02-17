@@ -294,6 +294,71 @@ function defaultUserState(string $userId, array $topicsData): array
     ];
 }
 
+
+function normalizeControlJson(array $decoded): array
+{
+    $allowedActions = ['continue', 'switch', 'park'];
+    $action = (string)($decoded['active_topic_action'] ?? 'continue');
+    if (!in_array($action, $allowedActions, true)) {
+        $action = 'continue';
+    }
+
+    $nextTopicId = $decoded['next_active_topic_id'] ?? null;
+    if (!is_string($nextTopicId) || trim($nextTopicId) === '') {
+        $nextTopicId = null;
+    }
+
+    $events = [];
+    foreach (($decoded['events'] ?? []) as $event) {
+        if (!is_array($event)) {
+            continue;
+        }
+        $type = (string)($event['type'] ?? '');
+        if ($type === 'topic_achieved') {
+            $topicId = trim((string)($event['topic_id'] ?? ''));
+            if ($topicId === '') {
+                continue;
+            }
+            $events[] = [
+                'type' => 'topic_achieved',
+                'topic_id' => $topicId,
+                'one_liner' => trim((string)($event['one_liner'] ?? '')),
+                'confidence' => max(0.0, min(1.0, (float)($event['confidence'] ?? 0.8))),
+            ];
+            continue;
+        }
+
+        if ($type === 'fact_change_proposed') {
+            $events[] = [
+                'type' => 'fact_change_proposed',
+                'fact_key' => trim((string)($event['fact_key'] ?? '')),
+                'old_value' => isset($event['old_value']) ? (string)$event['old_value'] : null,
+                'new_value' => trim((string)($event['new_value'] ?? '')),
+                'require_confirmation' => (bool)($event['require_confirmation'] ?? true),
+                'confidence' => max(0.0, min(1.0, (float)($event['confidence'] ?? 0.8))),
+            ];
+        }
+    }
+
+    $notes = [];
+    foreach (($decoded['notes_to_add'] ?? []) as $note) {
+        if (!is_string($note)) {
+            continue;
+        }
+        $trimmed = trim($note);
+        if ($trimmed !== '') {
+            $notes[] = $trimmed;
+        }
+    }
+
+    return [
+        'next_active_topic_id' => $nextTopicId,
+        'active_topic_action' => $action,
+        'events' => $events,
+        'notes_to_add' => $notes,
+    ];
+}
+
 function parseControlJson(string $responseText): array
 {
     $delimiter = "<<<CONTROL_JSON>>>";
@@ -310,7 +375,7 @@ function parseControlJson(string $responseText): array
         $jsonRaw = trim($parts[1]);
         $decoded = json_decode($jsonRaw, true);
         if (json_last_error() === JSON_ERROR_NONE && is_array($decoded)) {
-            $control = array_merge($control, $decoded);
+            $control = normalizeControlJson($decoded);
         } else {
             error_log(nowIso() . " invalid control json\n", 3, ERRORS_LOG);
         }

@@ -22,6 +22,75 @@ if (!file_exists($userPath)) {
     sendJson(['error' => 'User not found'], 404);
 }
 
+
+function decodeSectionJson(string $input, string $sectionName): mixed
+{
+    $pattern = '/^' . preg_quote($sectionName, '/') . ':\n(.*?)(?:\n\n[A-Z_]+(?: \([^)]*\))?:\n|\z)/s';
+    if (!preg_match($pattern, $input, $m)) {
+        return null;
+    }
+    $raw = trim($m[1]);
+    if ($raw === '') {
+        return null;
+    }
+    $decoded = json_decode($raw, true);
+    return (json_last_error() === JSON_ERROR_NONE) ? $decoded : $raw;
+}
+
+function formatPromptPreview(array $lastPayload, string $fallbackPrompt): string
+{
+    $messages = $lastPayload['messages'] ?? [];
+    if (!is_array($messages) || count($messages) < 2) {
+        return $fallbackPrompt;
+    }
+
+    $systemPrompt = (string)($messages[0]['content'] ?? $fallbackPrompt);
+    $promptInput = (string)($messages[1]['content'] ?? '');
+
+    $activeTopic = decodeSectionJson($promptInput, 'ACTIVE_TOPIC');
+    $profileFacts = decodeSectionJson($promptInput, 'PROFILE_FACTS (max 30)');
+    $closedTopics = decodeSectionJson($promptInput, 'CLOSED_TOPICS (most recent 25)');
+    $conversationWindow = decodeSectionJson($promptInput, 'CONVERSATION_WINDOW (max 5 pairs)');
+    $candidateTopics = decodeSectionJson($promptInput, 'CANDIDATE_TOPICS (10)');
+
+    $userMessage = '';
+    if (preg_match('/USER_MESSAGE:\n(.*)$/s', $promptInput, $m)) {
+        $userMessage = trim($m[1]);
+    }
+
+    $out = [];
+    $out[] = "### Prompt systemowy";
+    $out[] = trim($systemPrompt);
+    $out[] = "";
+    $out[] = "### Kontekst wejściowy";
+
+    $sections = [
+        'ACTIVE_TOPIC' => $activeTopic,
+        'PROFILE_FACTS' => $profileFacts,
+        'CLOSED_TOPICS' => $closedTopics,
+        'CONVERSATION_WINDOW' => $conversationWindow,
+        'CANDIDATE_TOPICS' => $candidateTopics,
+    ];
+
+    foreach ($sections as $label => $value) {
+        $out[] = "- {$label}:";
+        if (is_array($value)) {
+            $encoded = json_encode($value, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+            $out[] = $encoded !== false ? $encoded : '[]';
+        } elseif (is_string($value) && $value !== '') {
+            $out[] = $value;
+        } else {
+            $out[] = '[]';
+        }
+        $out[] = "";
+    }
+
+    $out[] = "- USER_MESSAGE:";
+    $out[] = $userMessage !== '' ? $userMessage : '-';
+
+    return trim(implode(PHP_EOL, $out));
+}
+
 function pickCandidateTopicsState(array $userState, array $flatTopics): array
 {
     $currentStage = $userState['stage_state']['stage_id'] ?? null;
@@ -114,10 +183,7 @@ $history = array_slice($userState['closed_topics_log'] ?? [], -10);
 $lastPayload = $userState['last_api_payload'] ?? null;
 $currentPrompt = $prompts['prompt_main'] ?? '';
 if (is_array($lastPayload)) {
-    $encoded = json_encode($lastPayload, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
-    if (is_string($encoded)) {
-        $currentPrompt = $encoded;
-    }
+    $currentPrompt = formatPromptPreview($lastPayload, $currentPrompt);
 }
 
 $currentGroupId = $userState['stage_state']['group_id'] ?? '';

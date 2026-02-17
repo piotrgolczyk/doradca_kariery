@@ -10,7 +10,7 @@ body { margin: 0; background: #f5f7fb; }
 .sidebar li { font-size: 14px; margin-bottom: 4px; }
 .prompt-header { display:flex; justify-content:space-between; align-items:center; }
 .copy-btn { border: 1px solid #ccc; background:#fff; border-radius:6px; cursor:pointer; font-size:14px; }
-.prompt-box { font-size: 11px; line-height: 1.35; white-space: pre-wrap; background:#f8fafc; border:1px solid #e5e7eb; border-radius:8px; padding:8px; max-height:220px; overflow:auto; }
+.prompt-box { font-size: 12px; line-height: 1.5; white-space: pre-wrap; background:#f8fafc; border:1px solid #e5e7eb; border-radius:8px; padding:10px; max-height:300px; overflow:auto; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
 
 .chat-shell { max-width: 780px; margin: 2rem auto; background: #fff; border-radius: 12px; padding: 1rem; box-shadow: 0 8px 24px rgba(0,0,0,.08); }
 h1 { margin-top: 0; font-size: 1.4rem; }

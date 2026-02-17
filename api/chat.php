@@ -119,9 +119,10 @@ function callOpenAi(string $apiKey, array $messages, bool $stream, ?callable $on
 {
     $url = 'https://api.openai.com/v1/chat/completions';
     $payload = [
-        'model' => 'gpt-4o-mini',
+        'model' => 'gpt-5-mini',
         'messages' => $messages,
         'temperature' => 0.4,
+        'reasoning_effort' => 'low',
         'stream' => $stream,
     ];
 
@@ -335,7 +336,7 @@ $chatResult = withLockedJsonFile($userPath, function (array $userState) use ($us
     $userState['last_api_payload'] = [
         'updated_at' => nowIso(),
         'endpoint' => 'chat.completions',
-        'model' => 'gpt-4o-mini',
+        'model' => 'gpt-5-mini',
         'temperature' => 0.4,
         'stream' => true,
         'messages' => $messages,
@@ -413,17 +414,28 @@ $chatResult = withLockedJsonFile($userPath, function (array $userState) use ($us
             $userState['topic_state'][$topicId]['status'] = 'achieved';
             $userState['topic_state'][$topicId]['achieved_at'] = nowIso();
 
-            $sumInput = "TOPIC_ID: {$topicId}\nTOPIC_GOAL: " . ($topic['goal'] ?? '') . "\nFACT_KEY: " . ($topic['fact_key'] ?? 'null') . "\nUSER_CONTEXT:\n- last_user_message: {$userMessage}\n- conversation_window: " . json_encode($userState['conversation_window'], JSON_UNESCAPED_UNICODE);
-            $sumMessages = [
-                ['role' => 'system', 'content' => $summarizerSystem],
-                ['role' => 'user', 'content' => $sumInput],
-            ];
+            $sum = null;
+            $eventOneLiner = trim((string)($event['one_liner'] ?? ''));
+            if ($eventOneLiner !== '') {
+                $sum = [
+                    'one_liner' => mb_substr($eventOneLiner, 0, 140),
+                    'fact_key' => $topic['fact_key'] ?? null,
+                    'fact_value' => null,
+                    'confidence' => (float)($event['confidence'] ?? 0.8),
+                ];
+            } else {
+                $sumInput = "TOPIC_ID: {$topicId}\nTOPIC_GOAL: " . ($topic['goal'] ?? '') . "\nFACT_KEY: " . ($topic['fact_key'] ?? 'null') . "\nUSER_CONTEXT:\n- last_user_message: {$userMessage}\n- conversation_window: " . json_encode($userState['conversation_window'], JSON_UNESCAPED_UNICODE);
+                $sumMessages = [
+                    ['role' => 'system', 'content' => $summarizerSystem],
+                    ['role' => 'user', 'content' => $sumInput],
+                ];
 
-            try {
-                $sumRaw = callOpenAi($apiKey, $sumMessages, false);
-                $sum = json_decode(trim($sumRaw), true);
-            } catch (Throwable) {
-                $sum = null;
+                try {
+                    $sumRaw = callOpenAi($apiKey, $sumMessages, false);
+                    $sum = json_decode(trim($sumRaw), true);
+                } catch (Throwable) {
+                    $sum = null;
+                }
             }
 
             if (!is_array($sum)) {
