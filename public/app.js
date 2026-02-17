@@ -22,6 +22,7 @@ const KEY_UUID = 'career_uuid';
 const API_BASE = window.location.pathname.includes('/public/') ? '../api/' : 'api/';
 let userId = null;
 let streaming = false;
+let lastChatError = null;
 
 function setApiStatus(ok, label, tooltip) {
   if (!apiStatusDotEl || !apiStatusLabelEl || !apiStatusTooltipEl) return;
@@ -59,6 +60,11 @@ async function diagnoseApiConnection() {
   if (!navigator.onLine) {
     ok = false;
     report.push('browser_offline: true');
+  }
+
+  if (lastChatError) {
+    ok = false;
+    report.push(`last_chat_error: ${lastChatError}`);
   }
 
   try {
@@ -229,6 +235,15 @@ async function sendMessage(text) {
   });
 
   if (!res.ok || !res.body) {
+    let details = '';
+    try {
+      details = await res.text();
+    } catch (_) {
+      details = '';
+    }
+    const snippet = details ? details.slice(0, 300).replace(/\s+/g, ' ') : 'no response body';
+    lastChatError = `chat_status=${res.status}; details=${snippet}`;
+    setApiStatus(false, 'Brak połączenia z API', `time: ${new Date().toISOString()}\n${lastChatError}`);
     assistantEl.textContent = 'Błąd połączenia z serwerem.';
     streaming = false;
     sendBtn.disabled = false;
@@ -250,7 +265,9 @@ async function sendMessage(text) {
   assistantEl.textContent = stripControlJson(buffer);
   streaming = false;
   sendBtn.disabled = false;
+  lastChatError = null;
   await refreshStatePanel();
+  await diagnoseApiConnection();
 }
 
 formEl.addEventListener('submit', async (e) => {
