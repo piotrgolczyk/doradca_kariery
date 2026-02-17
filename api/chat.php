@@ -209,59 +209,42 @@ function upsertFact(array &$profileFacts, string $factKey, string $value, string
 }
 
 
-function extractSimpleName(string $message): ?string
+
+function getFactValueFromProfile(array $profileFacts, string $factKey): ?string
 {
-    $trim = trim($message);
-    if ($trim === '') {
-        return null;
-    }
-
-    $patterns = [
-        '/(?:mam na imię|jestem|to ja)\s+([A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż\-]{2,30})/iu',
-        '/^([A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż\-]{2,30})$/u',
-    ];
-
-    foreach ($patterns as $pattern) {
-        if (preg_match($pattern, $trim, $m) === 1) {
-            $name = trim($m[1]);
-            return $name !== '' ? mb_convert_case($name, MB_CASE_TITLE, 'UTF-8') : null;
+    foreach ($profileFacts as $fact) {
+        if (($fact['fact_key'] ?? '') === $factKey) {
+            return isset($fact['value']) ? (string)$fact['value'] : null;
         }
     }
-
     return null;
 }
 
-
-
-function extractSchoolProfile(string $message): ?string
+function proposeFactConflict(array &$userState, string $factKey, string $oldValue, string $newValue, string $topicId, float $confidence): string
 {
-    $trim = trim($message);
-    if ($trim === '') {
+    $userState['active_topic']['mode'] = 'confirmation_pending';
+    $userState['active_topic']['pending_confirmation'] = [
+        'fact_key' => $factKey,
+        'old_value' => $oldValue,
+        'new_value' => $newValue,
+        'topic_id' => $topicId,
+        'confidence' => $confidence,
+    ];
+
+    return "Wykryłem zmianę dla pola '{$factKey}': '{$oldValue}' -> '{$newValue}'. Czy mam zaktualizować tę wartość?";
+}
+
+function applyFactWithConflictCheck(array &$userState, string $factKey, string $newValue, string $topicId, float $confidence): ?string
+{
+    $normalized = trim($newValue);
+    if ($normalized === '') {
         return null;
     }
 
-    $patterns = [
-        '/(?:profil(?:\s+klasy|\s+szkoły)?|jestem\s+w\s+klasie|uczę\s+się\s+w\s+klasie|chodzę\s+do\s+klasy)\s*[:\-]?\s*([^
-\.\!\?]{3,120})/iu',
-        '/(liceum\s+[^
-\.\!\?]{2,100}|technik(?:um)?\s+[^
-\.\!\?]{2,100}|profil\s+[^
-\.\!\?]{2,100})/iu',
-    ];
-
-    foreach ($patterns as $pattern) {
-        if (preg_match($pattern, $trim, $m) === 1) {
-            $value = trim($m[1]);
-            if ($value !== '') {
-                return mb_substr($value, 0, 120);
-            }
-        }
-    }
-
-    return null;
-}
-
-function findFactValue(array $profileFacts, string $factKey): ?string
+    $current = getFactValueFromProfile($userState['profile_facts'] ?? [], $factKey);
+    if ($current !== null && mb_strtolower(trim($current)) !== mb_strtolower($normalized)) {
+        return proposeFactConflict($userState, $factKey, trim($current), $normalized, $topicId, $confidence);
+    upsertFact($userState['profile_facts'], $factKey, $normalized, $topicId, $confidence);
 {
     foreach ($profileFacts as $fact) {
         if (($fact['fact_key'] ?? '') === $factKey) {
@@ -301,41 +284,6 @@ $chatResult = withLockedJsonFile($userPath, function (array $userState) use ($us
     $pending = $userState['active_topic']['pending_confirmation'] ?? null;
     if ($pending) {
         $answer = mb_strtolower(trim($userMessage));
-        if (in_array($answer, ['tak', 'yes', 'y', 'potwierdzam'], true)) {
-            upsertFact(
-                $userState['profile_facts'],
-                $pending['fact_key'],
-                $pending['new_value'],
-                $pending['topic_id'],
-                (float)($pending['confidence'] ?? 0.8)
-            );
-            $userState['active_topic']['pending_confirmation'] = null;
-            $userState['active_topic']['mode'] = 'normal';
-            $confirmMessage = 'Dzięki, zaktualizowałem to. Lecimy dalej.';
-            $userState['conversation_window'][] = ['ts' => nowIso(), 'user' => $userMessage, 'assistant' => $confirmMessage];
-            $userState['conversation_window'] = array_slice($userState['conversation_window'], -5);
-            $userState['rate_limit']['last_request_at'] = nowIso();
-            appendConversationEntry($userId, 'assistant', $confirmMessage);
-            return ['data' => $userState, 'return' => ['immediate_text' => $confirmMessage]];
-        }
-        if (in_array($answer, ['nie', 'no', 'n'], true)) {
-            $userState['active_topic']['pending_confirmation'] = null;
-            $userState['active_topic']['mode'] = 'normal';
-            $confirmMessage = 'Jasne, zostawiam poprzednią wartość. Dzięki za doprecyzowanie.';
-            $userState['conversation_window'][] = ['ts' => nowIso(), 'user' => $userMessage, 'assistant' => $confirmMessage];
-            $userState['conversation_window'] = array_slice($userState['conversation_window'], -5);
-            $userState['rate_limit']['last_request_at'] = nowIso();
-            appendConversationEntry($userId, 'assistant', $confirmMessage);
-            return ['data' => $userState, 'return' => ['immediate_text' => $confirmMessage]];
-        }
-    }
-
-    $detectedName = extractSimpleName($userMessage);
-    $knownName = findFactValue($userState['profile_facts'] ?? [], 'name');
-    if ($detectedName !== null) {
-        if ($knownName !== null && mb_strtolower($knownName) !== mb_strtolower($detectedName)) {
-            $userState['active_topic']['mode'] = 'confirmation_pending';
-            $userState['active_topic']['pending_confirmation'] = [
                 'fact_key' => 'name',
                 'old_value' => $knownName,
                 'new_value' => $detectedName,
@@ -473,17 +421,29 @@ $chatResult = withLockedJsonFile($userPath, function (array $userState) use ($us
             $sumMessages = [
                 ['role' => 'system', 'content' => $summarizerSystem],
                 ['role' => 'user', 'content' => $sumInput],
-            ];
+            if ($factKey) {
+                $candidateValue = null;
+                if (is_string($factValue) && trim($factValue) !== '') {
+                    $candidateValue = trim($factValue);
+                } elseif (trim($userMessage) !== '') {
+                    $candidateValue = mb_substr(trim($userMessage), 0, 140);
+                }
 
-            try {
-                $sumRaw = callOpenAi($apiKey, $sumMessages, false);
-                $sum = json_decode(trim($sumRaw), true);
-            } catch (Throwable) {
-                $sum = null;
-            }
+                if ($candidateValue !== null) {
+                    $confMsg = applyFactWithConflictCheck(
+                        $userState,
+                        (string)$factKey,
+                        $candidateValue,
+                        $topicId,
+                        (float)($sum['confidence'] ?? 0.8)
+                    );
+                    if (is_string($confMsg) && $confMsg !== '') {
+                        $userState['conversation_window'][] = ['ts' => nowIso(), 'user' => $userMessage, 'assistant' => $confMsg];
+                        $userState['conversation_window'] = array_slice($userState['conversation_window'], -5);
+                        appendConversationEntry($userId, 'assistant', $confMsg);
+                    }
+                }
 
-            if (!is_array($sum)) {
-                $sum = [
                     'one_liner' => ($topic['title'] ?? $topicId) . ' - domknięty.',
                     'fact_key' => $topic['fact_key'] ?? null,
                     'fact_value' => null,
