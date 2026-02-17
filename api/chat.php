@@ -231,6 +231,46 @@ function extractSimpleName(string $message): ?string
     return null;
 }
 
+
+
+function extractSchoolProfile(string $message): ?string
+{
+    $trim = trim($message);
+    if ($trim === '') {
+        return null;
+    }
+
+    $patterns = [
+        '/(?:profil(?:\s+klasy|\s+szkoły)?|jestem\s+w\s+klasie|uczę\s+się\s+w\s+klasie|chodzę\s+do\s+klasy)\s*[:\-]?\s*([^
+\.\!\?]{3,120})/iu',
+        '/(liceum\s+[^
+\.\!\?]{2,100}|technik(?:um)?\s+[^
+\.\!\?]{2,100}|profil\s+[^
+\.\!\?]{2,100})/iu',
+    ];
+
+    foreach ($patterns as $pattern) {
+        if (preg_match($pattern, $trim, $m) === 1) {
+            $value = trim($m[1]);
+            if ($value !== '') {
+                return mb_substr($value, 0, 120);
+            }
+        }
+    }
+
+    return null;
+}
+
+function findFactValue(array $profileFacts, string $factKey): ?string
+{
+    foreach ($profileFacts as $fact) {
+        if (($fact['fact_key'] ?? '') === $factKey) {
+            return isset($fact['value']) ? (string)$fact['value'] : null;
+        }
+    }
+    return null;
+}
+
 function closeTopicWithFallback(array &$userState, array $flatTopics, string $topicId, string $fallbackText): void
 {
     if (!isset($flatTopics[$topicId])) {
@@ -290,6 +330,41 @@ $chatResult = withLockedJsonFile($userPath, function (array $userState) use ($us
         }
     }
 
+    $detectedName = extractSimpleName($userMessage);
+    $knownName = findFactValue($userState['profile_facts'] ?? [], 'name');
+    if ($detectedName !== null) {
+        if ($knownName !== null && mb_strtolower($knownName) !== mb_strtolower($detectedName)) {
+            $userState['active_topic']['mode'] = 'confirmation_pending';
+            $userState['active_topic']['pending_confirmation'] = [
+                'fact_key' => 'name',
+                'old_value' => $knownName,
+                'new_value' => $detectedName,
+                'topic_id' => 'S1G1_T1_NAME',
+                'confidence' => 0.95,
+            ];
+
+            $confirmMessage = "Czy mam zaktualizować Twoje imię z {$knownName} na {$detectedName}?";
+            $userState['conversation_window'][] = ['ts' => nowIso(), 'user' => $userMessage, 'assistant' => $confirmMessage];
+            $userState['conversation_window'] = array_slice($userState['conversation_window'], -5);
+            $userState['rate_limit']['last_request_at'] = nowIso();
+            appendConversationEntry($userId, 'assistant', $confirmMessage);
+            return ['data' => $userState, 'return' => ['immediate_text' => $confirmMessage]];
+        }
+
+        if ($knownName === null || mb_strtolower($knownName) !== mb_strtolower($detectedName)) {
+            upsertFact($userState['profile_facts'], 'name', $detectedName, 'S1G1_T1_NAME', 0.9);
+        }
+    }
+
+    $detectedSchool = extractSchoolProfile($userMessage);
+    if ($detectedSchool !== null) {
+        upsertFact($userState['profile_facts'], 'school_profile', $detectedSchool, 'S1G1_T2_SCHOOL', 0.75);
+        if ((($userState['topic_state']['S1G1_T2_SCHOOL']['status'] ?? 'not_started') !== 'achieved') &&
+            (($userState['active_topic']['topic_id'] ?? '') === 'S1G1_T2_SCHOOL')) {
+            closeTopicWithFallback($userState, $flatTopics, 'S1G1_T2_SCHOOL', "Profil szkoły: {$detectedSchool}.");
+        }
+    }
+
     $candidateTopics = pickCandidateTopics($userState, $topicsData, $flatTopics);
     $activeTopicId = $userState['active_topic']['topic_id'] ?? null;
     $activeTopicMeta = $flatTopics[$activeTopicId]['topic'] ?? [];
@@ -313,6 +388,14 @@ $chatResult = withLockedJsonFile($userPath, function (array $userState) use ($us
         ['role' => 'user', 'content' => $promptInput],
     ];
 
+    $userState['last_api_payload'] = [
+        'updated_at' => nowIso(),
+        'endpoint' => 'chat.completions',
+        'model' => 'gpt-4o-mini',
+        'temperature' => 0.4,
+        'stream' => true,
+        'messages' => $messages,
+    ];
 
     header('Content-Type: text/plain; charset=utf-8');
     header('Cache-Control: no-cache');

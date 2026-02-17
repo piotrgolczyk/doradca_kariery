@@ -111,6 +111,15 @@ foreach ($candidates as $candidate) {
 $history = array_slice($userState['closed_topics_log'] ?? [], -10);
 
 
+$lastPayload = $userState['last_api_payload'] ?? null;
+$currentPrompt = $prompts['prompt_main'] ?? '';
+if (is_array($lastPayload)) {
+    $encoded = json_encode($lastPayload, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+    if (is_string($encoded)) {
+        $currentPrompt = $encoded;
+    }
+}
+
 $currentGroupId = $userState['stage_state']['group_id'] ?? '';
 $currentStageId = $userState['stage_state']['stage_id'] ?? '';
 $groupPoints = 0;
@@ -152,5 +161,5 @@ sendJson([
         'stage_id' => $currentStageId,
         'group_id' => $currentGroupId,
     ],
-    'current_prompt' => $prompts['prompt_main'] ?? '',
+    'current_prompt' => $currentPrompt,
 ]);
