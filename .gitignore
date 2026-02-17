@@ -1,0 +1,4 @@
+data/user_*.json
+data/errors.log
+data/settings.json
+data/prompts.json
