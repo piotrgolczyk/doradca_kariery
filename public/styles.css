@@ -1,0 +1,26 @@
+:root { font-family: Arial, sans-serif; }
+body { margin: 0; background: #f5f7fb; }
+
+.sidebar-toggle { position: fixed; left: 10px; top: 10px; z-index: 1100; background: #1f2937; color: #fff; border: 0; border-radius: 8px; width: 40px; height: 40px; cursor: pointer; }
+.sidebar { position: fixed; left: -340px; top: 0; width: 320px; height: 100vh; background: #fff; box-shadow: 2px 0 16px rgba(0,0,0,.12); padding: 16px; box-sizing: border-box; overflow-y: auto; transition: left .2s ease; z-index: 1000; }
+.sidebar.open { left: 0; }
+.sidebar h2 { margin-top: 8px; }
+.sidebar h3 { font-size: 14px; margin-bottom: 6px; }
+.sidebar ul { margin: 0 0 12px; padding-left: 18px; }
+.sidebar li { font-size: 14px; margin-bottom: 4px; }
+.prompt-header { display:flex; justify-content:space-between; align-items:center; }
+.copy-btn { border: 1px solid #ccc; background:#fff; border-radius:6px; cursor:pointer; font-size:14px; }
+.prompt-box { font-size: 11px; line-height: 1.35; white-space: pre-wrap; background:#f8fafc; border:1px solid #e5e7eb; border-radius:8px; padding:8px; max-height:220px; overflow:auto; }
+
+.chat-shell { max-width: 780px; margin: 2rem auto; background: #fff; border-radius: 12px; padding: 1rem; box-shadow: 0 8px 24px rgba(0,0,0,.08); }
+h1 { margin-top: 0; font-size: 1.4rem; }
+.history-load-wrap { margin-bottom: 8px; }
+.load-history-btn { border:1px solid #d1d5db; background:#fff; border-radius:8px; padding:6px 10px; cursor:pointer; font-size:12px; }
+.messages { height: 60vh; overflow-y: auto; border: 1px solid #e3e7ef; border-radius: 10px; padding: .75rem; background: #fcfdff; }
+.msg { margin: .5rem 0; padding: .6rem .8rem; border-radius: 10px; max-width: 80%; white-space: pre-wrap; }
+.msg.user { margin-left: auto; background: #d8ebff; }
+.msg.assistant { background: #eef2f7; }
+.chat-form { display: flex; gap: .5rem; margin-top: .8rem; }
+#chat-input { flex: 1; padding: .7rem; border-radius: 8px; border: 1px solid #ccd4e0; }
+#send-btn { padding: .7rem 1rem; border: 0; border-radius: 8px; background: #2563eb; color: white; }
+#send-btn:disabled { opacity: .5; }

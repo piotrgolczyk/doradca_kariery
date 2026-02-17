@@ -1,0 +1,203 @@
+const messagesEl = document.getElementById('messages');
+const formEl = document.getElementById('chat-form');
+const inputEl = document.getElementById('chat-input');
+const sendBtn = document.getElementById('send-btn');
+
+const sidebarEl = document.getElementById('sidebar');
+const sidebarToggleEl = document.getElementById('sidebar-toggle');
+const activeTopicItemEl = document.getElementById('active-topic-item');
+const upcomingTopicsListEl = document.getElementById('upcoming-topics-list');
+const historyListEl = document.getElementById('history-list');
+const pointsCurrentEl = document.getElementById('points-current');
+const pointsMissingEl = document.getElementById('points-missing');
+const promptBoxEl = document.getElementById('current-prompt-box');
+const copyPromptBtnEl = document.getElementById('copy-prompt-btn');
+const historyLoadWrapEl = document.getElementById('history-load-wrap');
+const loadFullHistoryBtnEl = document.getElementById('load-full-history-btn');
+
+const KEY_UUID = 'career_uuid';
+const API_BASE = window.location.pathname.includes('/public/') ? '../api/' : 'api/';
+let userId = null;
+let streaming = false;
+
+function uuidv4() {
+  return crypto.randomUUID ? crypto.randomUUID() : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+    const r = Math.random() * 16 | 0;
+    const v = c === 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
+}
+
+function getOrCreateUuid() {
+  let id = localStorage.getItem(KEY_UUID);
+  if (!id) {
+    id = uuidv4();
+    localStorage.setItem(KEY_UUID, id);
+    document.cookie = `${KEY_UUID}=${id}; path=/; max-age=31536000; SameSite=Lax`;
+  }
+  return id;
+}
+
+function getFingerprint() {
+  return [navigator.userAgent, navigator.language, `${screen.width}x${screen.height}`, Intl.DateTimeFormat().resolvedOptions().timeZone].join('|');
+}
+
+function addMessage(role, text) {
+  const div = document.createElement('div');
+  div.className = `msg ${role}`;
+  div.textContent = text;
+  messagesEl.appendChild(div);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+  return div;
+}
+
+function stripControlJson(text) {
+  const delimiter = '<<<CONTROL_JSON>>>';
+  const idx = text.indexOf(delimiter);
+  return idx === -1 ? text : text.slice(0, idx).trimEnd();
+}
+
+function renderList(container, items, mapFn) {
+  container.innerHTML = '';
+  if (!items || items.length === 0) {
+    const li = document.createElement('li');
+    li.textContent = '-';
+    container.appendChild(li);
+    return;
+  }
+  items.forEach(item => {
+    const li = document.createElement('li');
+    li.textContent = mapFn(item);
+    container.appendChild(li);
+  });
+}
+
+function renderChatHistory(items) {
+  messagesEl.innerHTML = '';
+  if (!items || items.length === 0) {
+    addMessage('assistant', 'Cześć! Jestem Twoim doradcą kariery. Jak masz na imię?');
+    return;
+  }
+  items.forEach(item => {
+    const role = item.role === 'user' ? 'user' : 'assistant';
+    addMessage(role, item.text || '');
+  });
+}
+
+async function loadChatHistory(full = false) {
+  if (!userId) return;
+  const res = await fetch(`${API_BASE}history.php?user_id=${encodeURIComponent(userId)}&full=${full ? '1' : '0'}`);
+  if (!res.ok) return;
+  const data = await res.json();
+  renderChatHistory(data.items || []);
+
+  if (data.has_more) {
+    historyLoadWrapEl.hidden = false;
+  } else {
+    historyLoadWrapEl.hidden = true;
+  }
+}
+
+async function refreshStatePanel() {
+  if (!userId) return;
+  try {
+    const res = await fetch(`${API_BASE}state.php?user_id=${encodeURIComponent(userId)}`);
+    if (!res.ok) return;
+    const state = await res.json();
+
+    activeTopicItemEl.textContent = state.active_topic?.title || '-';
+    renderList(upcomingTopicsListEl, state.upcoming_topics || [], item => item.title || item.topic_id || '-');
+    renderList(historyListEl, state.history || [], item => item.text || '-');
+
+    const pts = state.section_points || {};
+    pointsCurrentEl.textContent = `Zebrane: ${pts.current ?? '-'} / ${pts.required ?? '-'}`;
+    pointsMissingEl.textContent = `Brakuje: ${pts.missing ?? '-'}`;
+
+    promptBoxEl.textContent = state.current_prompt || '-';
+  } catch (_) {
+    // ignore panel refresh failures in MVP
+  }
+}
+
+async function initUser() {
+  const res = await fetch(`${API_BASE}init.php`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ uuid: getOrCreateUuid(), fingerprint: getFingerprint() })
+  });
+  const data = await res.json();
+  userId = data.user_id;
+}
+
+async function sendMessage(text) {
+  streaming = true;
+  sendBtn.disabled = true;
+  const assistantEl = addMessage('assistant', '');
+
+  const res = await fetch(`${API_BASE}chat.php`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ user_id: userId, user_message: text, client_timestamp: new Date().toISOString() })
+  });
+
+  if (!res.ok || !res.body) {
+    assistantEl.textContent = 'Błąd połączenia z serwerem.';
+    streaming = false;
+    sendBtn.disabled = false;
+    return;
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    assistantEl.textContent = stripControlJson(buffer);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
+  assistantEl.textContent = stripControlJson(buffer);
+  streaming = false;
+  sendBtn.disabled = false;
+  await refreshStatePanel();
+}
+
+formEl.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  if (streaming || !userId) return;
+  const text = inputEl.value.trim();
+  if (!text) return;
+  addMessage('user', text);
+  inputEl.value = '';
+  await sendMessage(text);
+});
+
+sidebarToggleEl?.addEventListener('click', () => {
+  sidebarEl?.classList.toggle('open');
+});
+
+loadFullHistoryBtnEl?.addEventListener('click', async () => {
+  await loadChatHistory(true);
+  historyLoadWrapEl.hidden = true;
+});
+
+copyPromptBtnEl?.addEventListener('click', async () => {
+  const text = promptBoxEl?.textContent || '';
+  if (!text || text === '-') return;
+  try {
+    await navigator.clipboard.writeText(text);
+    copyPromptBtnEl.textContent = '✅';
+    setTimeout(() => { copyPromptBtnEl.textContent = '📋'; }, 1200);
+  } catch (_) {
+    // no-op
+  }
+});
+
+initUser().then(async () => {
+  await loadChatHistory(false);
+  await refreshStatePanel();
+  setInterval(refreshStatePanel, 4000);
+});
