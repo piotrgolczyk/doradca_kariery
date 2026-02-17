@@ -3,6 +3,12 @@ const formEl = document.getElementById('chat-form');
 const inputEl = document.getElementById('chat-input');
 const sendBtn = document.getElementById('send-btn');
 
+const sidebarEl = document.getElementById('sidebar');
+const sidebarToggleEl = document.getElementById('sidebar-toggle');
+const activeTopicItemEl = document.getElementById('active-topic-item');
+const upcomingTopicsListEl = document.getElementById('upcoming-topics-list');
+const historyListEl = document.getElementById('history-list');
+
 const KEY_UUID = 'career_uuid';
 const API_BASE = window.location.pathname.includes('/public/') ? '../api/' : 'api/';
 let userId = null;
@@ -10,7 +16,9 @@ let streaming = false;
 
 function uuidv4() {
   return crypto.randomUUID ? crypto.randomUUID() : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
-    const r = Math.random() * 16 | 0; const v = c === 'x' ? r : (r & 0x3 | 0x8); return v.toString(16);
+    const r = Math.random() * 16 | 0;
+    const v = c === 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
   });
 }
 
@@ -35,6 +43,42 @@ function addMessage(role, text) {
   messagesEl.appendChild(div);
   messagesEl.scrollTop = messagesEl.scrollHeight;
   return div;
+}
+
+function stripControlJson(text) {
+  const delimiter = '<<<CONTROL_JSON>>>';
+  const idx = text.indexOf(delimiter);
+  return idx === -1 ? text : text.slice(0, idx).trimEnd();
+}
+
+function renderList(container, items, mapFn) {
+  container.innerHTML = '';
+  if (!items || items.length === 0) {
+    const li = document.createElement('li');
+    li.textContent = '-';
+    container.appendChild(li);
+    return;
+  }
+  items.forEach(item => {
+    const li = document.createElement('li');
+    li.textContent = mapFn(item);
+    container.appendChild(li);
+  });
+}
+
+async function refreshStatePanel() {
+  if (!userId) return;
+  try {
+    const res = await fetch(`${API_BASE}state.php?user_id=${encodeURIComponent(userId)}`);
+    if (!res.ok) return;
+    const state = await res.json();
+
+    activeTopicItemEl.textContent = state.active_topic?.title || '-';
+    renderList(upcomingTopicsListEl, state.upcoming_topics || [], item => item.title || item.topic_id || '-');
+    renderList(historyListEl, state.history || [], item => item.text || '-');
+  } catch (_) {
+    // ignore panel refresh failures in MVP
+  }
 }
 
 async function initUser() {
@@ -73,12 +117,14 @@ async function sendMessage(text) {
     const { value, done } = await reader.read();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
-    assistantEl.textContent = buffer;
+    assistantEl.textContent = stripControlJson(buffer);
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 
+  assistantEl.textContent = stripControlJson(buffer);
   streaming = false;
   sendBtn.disabled = false;
+  await refreshStatePanel();
 }
 
 formEl.addEventListener('submit', async (e) => {
@@ -91,6 +137,12 @@ formEl.addEventListener('submit', async (e) => {
   await sendMessage(text);
 });
 
-initUser().then(() => {
+sidebarToggleEl?.addEventListener('click', () => {
+  sidebarEl?.classList.toggle('open');
+});
+
+initUser().then(async () => {
   addMessage('assistant', 'Cześć! Jestem Twoim doradcą kariery. Jak masz na imię?');
+  await refreshStatePanel();
+  setInterval(refreshStatePanel, 4000);
 });

@@ -208,6 +208,48 @@ function upsertFact(array &$profileFacts, string $factKey, string $value, string
     }
 }
 
+
+function extractSimpleName(string $message): ?string
+{
+    $trim = trim($message);
+    if ($trim === '') {
+        return null;
+    }
+
+    $patterns = [
+        '/(?:mam na imię|jestem|to ja)\s+([A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż\-]{2,30})/iu',
+        '/^([A-Za-zĄĆĘŁŃÓŚŹŻąćęłńóśźż\-]{2,30})$/u',
+    ];
+
+    foreach ($patterns as $pattern) {
+        if (preg_match($pattern, $trim, $m) === 1) {
+            $name = trim($m[1]);
+            return $name !== '' ? mb_convert_case($name, MB_CASE_TITLE, 'UTF-8') : null;
+        }
+    }
+
+    return null;
+}
+
+function closeTopicWithFallback(array &$userState, array $flatTopics, string $topicId, string $fallbackText): void
+{
+    if (!isset($flatTopics[$topicId])) {
+        return;
+    }
+
+    $topic = $flatTopics[$topicId]['topic'];
+    $userState['topic_state'][$topicId]['status'] = 'achieved';
+    $userState['topic_state'][$topicId]['achieved_at'] = nowIso();
+
+    if (($topic['record_on_close'] ?? true) === true) {
+        $userState['closed_topics_log'][] = [
+            'topic_id' => $topicId,
+            'created_at' => nowIso(),
+            'text' => $fallbackText,
+        ];
+        $userState['closed_topics_log'] = array_slice($userState['closed_topics_log'], -100);
+    }
+}
 withLockedJsonFile($userPath, function (array $userState) use ($userMessage, $promptMain, $summarizerSystem, $apiKey, $flatTopics, $topicsData): array {
     $last = strtotime((string)($userState['rate_limit']['last_request_at'] ?? ''));
     if ($last && (time() - $last < 2)) {
@@ -278,8 +320,16 @@ withLockedJsonFile($userPath, function (array $userState) use ($userMessage, $pr
     try {
         $fullResponse = callOpenAi($apiKey, $messages, true, function (string $delta, string $full) use (&$bufferedText, &$sentLength) {
             $bufferedText = $full;
-            $delimiterPos = strpos($bufferedText, '<<<CONTROL_JSON>>>');
-            $safeText = $delimiterPos === false ? $bufferedText : substr($bufferedText, 0, $delimiterPos);
+            $delimiter = '<<<CONTROL_JSON>>>';
+            $delimiterPos = strpos($bufferedText, $delimiter);
+
+            if ($delimiterPos === false) {
+                $safeLen = max(0, strlen($bufferedText) - (strlen($delimiter) - 1));
+                $safeText = substr($bufferedText, 0, $safeLen);
+            } else {
+                $safeText = substr($bufferedText, 0, $delimiterPos);
+            }
+
             $toSend = substr($safeText, $sentLength);
             if ($toSend !== '') {
                 echo $toSend;
@@ -288,6 +338,20 @@ withLockedJsonFile($userPath, function (array $userState) use ($userMessage, $pr
                 flush();
             }
         });
+
+        $delimiter = '<<<CONTROL_JSON>>>';
+        $delimiterPos = strpos($bufferedText, $delimiter);
+        if ($delimiterPos === false) {
+            $finalText = $bufferedText;
+        } else {
+            $finalText = substr($bufferedText, 0, $delimiterPos);
+        }
+        $toSendFinal = substr($finalText, $sentLength);
+        if ($toSendFinal !== '') {
+            echo $toSendFinal;
+            @ob_flush();
+            flush();
+        }
     } catch (Throwable $e) {
         http_response_code(500);
         echo 'Wystąpił błąd podczas generowania odpowiedzi.';
@@ -302,6 +366,8 @@ withLockedJsonFile($userPath, function (array $userState) use ($userMessage, $pr
     $userState['conversation_window'][] = ['ts' => nowIso(), 'user' => $userMessage, 'assistant' => $assistantText];
     $userState['conversation_window'] = array_slice($userState['conversation_window'], -5);
 
+    $achievedTopicIds = [];
+
     foreach (($control['events'] ?? []) as $event) {
         if (($event['type'] ?? '') === 'topic_achieved') {
             $topicId = $event['topic_id'] ?? null;
@@ -309,6 +375,7 @@ withLockedJsonFile($userPath, function (array $userState) use ($userMessage, $pr
                 continue;
             }
 
+            $achievedTopicIds[] = $topicId;
             $topic = $flatTopics[$topicId]['topic'];
             $userState['topic_state'][$topicId]['status'] = 'achieved';
             $userState['topic_state'][$topicId]['achieved_at'] = nowIso();
@@ -363,9 +430,31 @@ withLockedJsonFile($userPath, function (array $userState) use ($userMessage, $pr
         }
     }
 
+    // fallback for name topic when model misses topic_achieved event
+    if ($activeTopicId === 'S1G1_T1_NAME' && !in_array('S1G1_T1_NAME', $achievedTopicIds, true)) {
+        $detectedName = extractSimpleName($userMessage);
+        if ($detectedName !== null) {
+            upsertFact($userState['profile_facts'], 'name', $detectedName, 'S1G1_T1_NAME', 0.8);
+            closeTopicWithFallback($userState, $flatTopics, 'S1G1_T1_NAME', "Imię użytkownika: {$detectedName}.");
+            $achievedTopicIds[] = 'S1G1_T1_NAME';
+        }
+    }
+
     $nextTopicId = $control['next_active_topic_id'] ?? $activeTopicId;
     if (is_string($nextTopicId) && isset($flatTopics[$nextTopicId])) {
         $userState['active_topic']['topic_id'] = $nextTopicId;
+    }
+
+    $currentActiveAfter = $userState['active_topic']['topic_id'] ?? null;
+    if ($currentActiveAfter && (($userState['topic_state'][$currentActiveAfter]['status'] ?? '') === 'achieved')) {
+        foreach ($candidateTopics as $candidate) {
+            $cid = $candidate['topic_id'] ?? null;
+            if ($cid && (($userState['topic_state'][$cid]['status'] ?? 'not_started') !== 'achieved')) {
+                $userState['active_topic']['topic_id'] = $cid;
+                $userState['active_topic']['since'] = nowIso();
+                break;
+            }
+        }
     }
 
     if (($control['active_topic_action'] ?? '') === 'park') {
