@@ -340,10 +340,28 @@ ASSISTANT_MESSAGE:
 
     $oneLiner = mb_substr(trim((string)($json['one_liner'] ?? '')), 0, 140);
     $factValue = isset($json['fact_value']) ? trim((string)$json['fact_value']) : '';
+    $memoryKeep = (bool)($json['memory_keep'] ?? false);
+    $memoryReason = mb_substr(trim((string)($json['memory_reason'] ?? '')), 0, 200);
     return [
         'one_liner' => $oneLiner,
         'fact_value' => $factValue,
+        'memory_keep' => $memoryKeep,
+        'memory_reason' => $memoryReason,
     ];
+}
+
+function should_store_topic_memory(array $topic, ?array $summary): bool
+{
+    if (!is_array($summary)) {
+        return !empty($topic['required']);
+    }
+
+    if (!empty($summary['memory_keep'])) {
+        return true;
+    }
+
+    // awaryjnie zachowaj tylko required, gdy model nie zwrócił keep=true
+    return !empty($topic['required']) && trim((string)($summary['one_liner'] ?? '')) !== '';
 }
 
 
@@ -745,10 +763,14 @@ foreach (($control['events'] ?? []) as $event) {
                 'topic_id' => $tid,
                 'summary_ok' => is_array($summary),
                 'one_liner_len' => mb_strlen($oneLiner),
+                'memory_keep' => (bool)($summary['memory_keep'] ?? false),
+                'memory_reason' => (string)($summary['memory_reason'] ?? ''),
             ];
 
-            if (!empty($topicRef['topic']['record_on_close'])) {
-                $state['closed_topics_log'][] = ['topic_id' => $tid, 'created_at' => $now, 'text' => $oneLiner];
+            if (!empty($topicRef['topic']['record_on_close']) && should_store_topic_memory($topicRef['topic'], $summary)) {
+                if (trim($oneLiner) !== '') {
+                    $state['closed_topics_log'][] = ['topic_id' => $tid, 'created_at' => $now, 'text' => $oneLiner];
+                }
             }
             if (!empty($topicRef['topic']['fact_key'])) {
                 $factKey = (string)$topicRef['topic']['fact_key'];
@@ -777,11 +799,6 @@ foreach (($control['events'] ?? []) as $event) {
                     $state['profile_facts'][$existingIndex] = $newFact;
 
                     if ($oldValue !== '' && $oldValue !== $value) {
-                        $state['closed_topics_log'][] = [
-                            'topic_id' => $tid,
-                            'created_at' => $now,
-                            'text' => mb_substr('Korekta ustaleń: ' . $factKey . ' = ' . $value . ' (wcześniej: ' . $oldValue . ')', 0, 140),
-                        ];
                         $backendDebug['fact_overwrites'][] = [
                             'fact_key' => $factKey,
                             'old_value' => $oldValue,
@@ -826,6 +843,24 @@ if ($revisitTopicId !== '') {
     $state['active_topic']['mode'] = 'normal';
     $state['active_topic']['pending_confirmation'] = null;
     $state['topic_state'][$revisitTopicId]['status'] = 'in_progress';
+}
+
+
+foreach (($control['notes_to_add'] ?? []) as $note) {
+    if (!is_array($note)) {
+        continue;
+    }
+    $noteText = trim((string)($note['text'] ?? ''));
+    $noteKeep = (bool)($note['memory_keep'] ?? false);
+    if (!$noteKeep || $noteText === '') {
+        continue;
+    }
+
+    $state['closed_topics_log'][] = [
+        'topic_id' => (string)($note['topic_id'] ?? ($state['active_topic']['topic_id'] ?? 'manual_note')),
+        'created_at' => $now,
+        'text' => mb_substr($noteText, 0, 140),
+    ];
 }
 
 maybe_advance_group($topics, $state, $now);
