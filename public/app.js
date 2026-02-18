@@ -309,7 +309,7 @@ async function sendMessage(text) {
     const event = lines.find((l) => l.startsWith('event:'))?.replace('event:', '').trim() || 'message';
     const dataLines = lines
       .filter((l) => l.startsWith('data:'))
-      .map((l) => l.replace(/^data:\\s*/, ''));
+      .map((l) => l.replace(/^data:\s*/, ''));
     return { event, data: dataLines.join('\n') };
   };
 
@@ -354,7 +354,7 @@ async function sendMessage(text) {
             assistantNode.textContent = `[Błąd streamingu: ${state.lastChatError}]`;
           }
           setApiStatus(false);
-        } else {
+        } else if (event === 'token' || event === 'message') {
           const token = payload.token || '';
           if (token) {
             tokenCount += 1;

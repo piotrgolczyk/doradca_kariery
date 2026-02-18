@@ -26,17 +26,14 @@ function normalize_topics_payload(array $payload): array
             $stageTitle = 'Etap ' . ($stageIdx + 1);
         }
 
-        $groupsIn = $stage['groups'] ?? [];
         $groupsOut = [];
-
-        foreach ($groupsIn as $groupIdx => $group) {
+        foreach (($stage['groups'] ?? []) as $groupIdx => $group) {
             if (!is_array($group)) {
                 continue;
             }
+
             $groupId = trim((string)($group['group_id'] ?? ''));
             $groupTitle = trim((string)($group['title'] ?? ''));
-            $minPoints = max(0, (int)($group['min_points_to_advance'] ?? 0));
-
             if ($groupId === '') {
                 $groupId = 'obszar_' . ($groupIdx + 1);
             }
@@ -44,12 +41,12 @@ function normalize_topics_payload(array $payload): array
                 $groupTitle = 'Obszar ' . ($groupIdx + 1);
             }
 
-            $topicsIn = $group['topics'] ?? [];
             $topicsOut = [];
-            foreach ($topicsIn as $topicIdx => $topic) {
+            foreach (($group['topics'] ?? []) as $topicIdx => $topic) {
                 if (!is_array($topic)) {
                     continue;
                 }
+
                 $topicId = trim((string)($topic['topic_id'] ?? ''));
                 $topicTitle = trim((string)($topic['title'] ?? ''));
                 if ($topicId === '') {
@@ -80,7 +77,7 @@ function normalize_topics_payload(array $payload): array
             $groupsOut[] = [
                 'group_id' => $groupId,
                 'title' => $groupTitle,
-                'min_points_to_advance' => $minPoints,
+                'min_points_to_advance' => max(0, (int)($group['min_points_to_advance'] ?? 0)),
                 'topics' => $topicsOut,
             ];
         }
@@ -97,7 +94,7 @@ function normalize_topics_payload(array $payload): array
     }
 
     if (empty($stagesOut)) {
-        throw new RuntimeException('Musisz mieć co najmniej 1 etap z 1 obszarem i 1 zadaniem.');
+        throw new RuntimeException('Dodaj minimum 1 etap, 1 obszar i 1 zadanie.');
     }
 
     return ['stages' => $stagesOut];
@@ -107,14 +104,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $raw = (string)($_POST['topics_json'] ?? '');
     $decoded = json_decode($raw, true);
     if (!is_array($decoded)) {
-        $error = 'Nie udało się odczytać zmian. Odśwież stronę i spróbuj ponownie.';
+        $error = 'Nie udało się odczytać formularza. Odśwież stronę i spróbuj jeszcze raz.';
     } else {
         try {
             $normalized = normalize_topics_payload($decoded);
             with_file_lock($topicsPath, static function () use ($topicsPath, $normalized): void {
                 atomic_write($topicsPath, json_encode($normalized, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT));
             });
-            $message = 'Zapisano zmiany ✅';
+            $message = 'Zapis gotowy — zmiany zostały zapisane ✅';
         } catch (Throwable $e) {
             $error = 'Nie udało się zapisać: ' . $e->getMessage();
         }
@@ -128,115 +125,135 @@ $topics = topics_data();
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Sterowanie etapami i zadaniami</title>
+  <title>Sterowanie etapami</title>
   <link rel="stylesheet" href="public/styles.css" />
 </head>
 <body class="admin-body">
-  <main class="control-wrap">
-    <h1>Sterowanie rozmową (etapy i zadania)</h1>
-    <p class="control-lead">To miejsce służy do prostego układania ścieżki rozmowy. Najpierw dodajesz <strong>etapy</strong>, a w nich <strong>obszary</strong> i <strong>zadania/pytania</strong>. Opisy przy polach mówią, co wpisać i jaki to ma wpływ.</p>
+  <main class="control-page">
+    <header class="control-header">
+      <div>
+        <h1>Sterowanie etapami i zadaniami</h1>
+        <p>Tu układasz całą ścieżkę rozmowy Emmy. Wszystko poniżej jest opisane prostym językiem.</p>
+      </div>
+      <a href="index.php" class="ghost-link">← Wróć do rozmowy</a>
+    </header>
 
-    <?php if ($message): ?><p class="success"><?= htmlspecialchars($message) ?></p><?php endif; ?>
-    <?php if ($error): ?><p class="error"><?= htmlspecialchars($error) ?></p><?php endif; ?>
+    <?php if ($message): ?><div class="notice ok"><?= htmlspecialchars($message) ?></div><?php endif; ?>
+    <?php if ($error): ?><div class="notice err"><?= htmlspecialchars($error) ?></div><?php endif; ?>
 
-    <div class="control-help">
-      <h2>Jak z tego korzystać?</h2>
-      <ol>
-        <li><strong>Etap</strong> = większy krok rozmowy (np. poznanie, zainteresowania).</li>
-        <li><strong>Obszar</strong> = mniejszy blok w etapie.</li>
-        <li><strong>Zadanie</strong> = konkretne pytanie, które Emma ma domknąć.</li>
-        <li><strong>Waga (punkty)</strong> mówi, jak mocno zadanie liczy się do przejścia dalej.</li>
-      </ol>
-    </div>
+    <section class="control-intro-grid">
+      <article class="info-box">
+        <h2>Jak to działa?</h2>
+        <ol>
+          <li><strong>Etap</strong> – duży krok (np. „Poznajmy Cię”).</li>
+          <li><strong>Obszar</strong> – część etapu (np. „Tożsamość”).</li>
+          <li><strong>Zadanie</strong> – konkretne pytanie/temat do domknięcia.</li>
+          <li><strong>Waga</strong> – liczba punktów za to zadanie.</li>
+        </ol>
+      </article>
+      <article class="stats-box">
+        <h2>Szybki podgląd</h2>
+        <p><strong>Etapy:</strong> <span id="countStages">0</span></p>
+        <p><strong>Obszary:</strong> <span id="countGroups">0</span></p>
+        <p><strong>Zadania:</strong> <span id="countTopics">0</span></p>
+        <p><strong>Status:</strong> <span id="saveStatus">Brak niezapisanych zmian</span></p>
+      </article>
+    </section>
 
-    <form id="controlForm" method="post" class="control-form">
+    <form id="controlForm" class="control-form" method="post">
       <input type="hidden" name="topics_json" id="topicsJsonInput" />
-      <div id="builder"></div>
 
-      <div class="control-actions">
-        <button type="button" id="addStageBtn">+ Dodaj etap</button>
-        <button type="submit" id="saveBtn">Zapisz zmiany</button>
+      <div id="builder" class="builder"></div>
+
+      <div class="sticky-actions">
+        <button type="button" id="addStageBtn" class="btn-secondary">+ Dodaj etap</button>
+        <button type="submit" id="saveBtn" class="btn-primary">Zapisz</button>
       </div>
     </form>
   </main>
 
   <template id="stageTpl">
-    <section class="control-card stage-card">
-      <div class="card-head">
+    <section class="block stage-block">
+      <div class="block-title-row">
         <h3>Etap</h3>
-        <button type="button" class="danger remove-stage">Usuń etap</button>
+        <button type="button" class="btn-danger remove-stage">Usuń etap</button>
       </div>
-      <label>ID etapu (techniczne)
-        <input class="stage-id" placeholder="np. poznanie" />
-        <small>Krótki unikalny identyfikator bez spacji.</small>
-      </label>
-      <label>Nazwa etapu (dla Ciebie i podglądu)
-        <input class="stage-title" placeholder="np. Poznajmy Cię" />
-      </label>
+      <div class="grid-2">
+        <label>ID etapu
+          <input class="stage-id" placeholder="np. poznanie" />
+          <small>Techniczne ID bez spacji.</small>
+        </label>
+        <label>Nazwa etapu
+          <input class="stage-title" placeholder="np. Poznajmy Cię" />
+          <small>To nazwa widoczna dla Ciebie.</small>
+        </label>
+      </div>
       <div class="groups"></div>
-      <button type="button" class="add-group">+ Dodaj obszar w tym etapie</button>
+      <button type="button" class="btn-secondary add-group">+ Dodaj obszar</button>
     </section>
   </template>
 
   <template id="groupTpl">
-    <section class="control-card group-card">
-      <div class="card-head">
-        <h4>Obszar w etapie</h4>
-        <button type="button" class="danger remove-group">Usuń obszar</button>
+    <section class="block group-block">
+      <div class="block-title-row">
+        <h4>Obszar</h4>
+        <button type="button" class="btn-danger remove-group">Usuń obszar</button>
       </div>
-      <label>ID obszaru (techniczne)
-        <input class="group-id" placeholder="np. tozsamosc" />
-      </label>
-      <label>Nazwa obszaru
-        <input class="group-title" placeholder="np. Tożsamość i preferencje" />
-      </label>
-      <label>Minimalna liczba punktów do przejścia dalej
-        <input class="group-min" type="number" min="0" value="0" />
-        <small>Gdy suma wag domkniętych zadań osiągnie ten próg, można przejść dalej.</small>
-      </label>
+      <div class="grid-3">
+        <label>ID obszaru
+          <input class="group-id" placeholder="np. tozsamosc" />
+        </label>
+        <label>Nazwa obszaru
+          <input class="group-title" placeholder="np. Tożsamość i preferencje" />
+        </label>
+        <label>Próg punktów
+          <input class="group-min" type="number" min="0" value="0" />
+          <small>Po tylu punktach można iść dalej.</small>
+        </label>
+      </div>
       <div class="topics"></div>
-      <button type="button" class="add-topic">+ Dodaj zadanie</button>
+      <button type="button" class="btn-secondary add-topic">+ Dodaj zadanie</button>
     </section>
   </template>
 
   <template id="topicTpl">
-    <section class="control-card topic-card">
-      <div class="card-head">
-        <h5>Zadanie / pytanie</h5>
-        <button type="button" class="danger remove-topic">Usuń zadanie</button>
+    <section class="block topic-block">
+      <div class="block-title-row">
+        <h5>Zadanie</h5>
+        <button type="button" class="btn-danger remove-topic">Usuń zadanie</button>
       </div>
-      <label>ID zadania (techniczne)
-        <input class="topic-id" placeholder="np. imie" />
-      </label>
-      <label>Nazwa zadania
-        <input class="topic-title" placeholder="np. Imię użytkownika" />
-      </label>
-      <label>Cel zadania
-        <textarea class="topic-goal" rows="2" placeholder="Co chcemy ustalić?"></textarea>
-      </label>
-      <label>Krótka podpowiedź pytania
-        <input class="topic-micro" placeholder="np. Zapytaj jak ma na imię." />
-      </label>
-      <div class="grid-2">
+      <div class="grid-3">
+        <label>ID zadania
+          <input class="topic-id" placeholder="np. imie" />
+        </label>
+        <label>Nazwa zadania
+          <input class="topic-title" placeholder="np. Imię użytkownika" />
+        </label>
         <label>Waga (punkty)
           <input class="topic-weight" type="number" min="0" value="1" />
         </label>
+      </div>
+      <label>Cel zadania
+        <textarea class="topic-goal" rows="2" placeholder="Co chcemy ustalić?"></textarea>
+      </label>
+      <label>Podpowiedź pytania
+        <input class="topic-micro" placeholder="np. Zapytaj jak ma na imię." />
+      </label>
+      <div class="grid-3">
         <label>Typ
           <select class="topic-type">
             <option value="question_goal">question_goal</option>
             <option value="internal_comment">internal_comment</option>
           </select>
         </label>
-      </div>
-      <div class="grid-2">
-        <label><input type="checkbox" class="topic-required" /> Wymagane (must-have)</label>
-        <label><input type="checkbox" class="topic-record" checked /> Zapisz one-liner po domknięciu</label>
-      </div>
-      <div class="grid-2">
         <label>Klucz pamięci (fact_key)
           <input class="topic-fact" placeholder="np. name" />
         </label>
-        <label><input type="checkbox" class="topic-confirm" /> Pytaj o potwierdzenie przy zmianie</label>
+        <label class="checkbox-row"><input type="checkbox" class="topic-required" /> Wymagane</label>
+      </div>
+      <div class="grid-2">
+        <label class="checkbox-row"><input type="checkbox" class="topic-record" checked /> Zapisuj one-liner po domknięciu</label>
+        <label class="checkbox-row"><input type="checkbox" class="topic-confirm" /> Potwierdzaj zmianę wartości</label>
       </div>
     </section>
   </template>
@@ -246,40 +263,53 @@ $topics = topics_data();
     const builder = document.getElementById('builder');
     const form = document.getElementById('controlForm');
     const hiddenInput = document.getElementById('topicsJsonInput');
-    const addStageBtn = document.getElementById('addStageBtn');
     const saveBtn = document.getElementById('saveBtn');
+    const addStageBtn = document.getElementById('addStageBtn');
+    const saveStatus = document.getElementById('saveStatus');
 
     let dirty = false;
 
-    function markDirty() {
-      dirty = true;
+    function setDirty(flag = true) {
+      dirty = flag;
+      saveStatus.textContent = dirty ? 'Masz niezapisane zmiany' : 'Brak niezapisanych zmian';
     }
 
-    function createStage(stage = {}) {
-      const node = document.getElementById('stageTpl').content.firstElementChild.cloneNode(true);
-      node.querySelector('.stage-id').value = stage.stage_id || '';
-      node.querySelector('.stage-title').value = stage.title || '';
-      const groupsBox = node.querySelector('.groups');
+    function updateCounters() {
+      const stages = Array.from(builder.querySelectorAll('.stage-block'));
+      const groups = Array.from(builder.querySelectorAll('.group-block'));
+      const topics = Array.from(builder.querySelectorAll('.topic-block'));
+      document.getElementById('countStages').textContent = String(stages.length);
+      document.getElementById('countGroups').textContent = String(groups.length);
+      document.getElementById('countTopics').textContent = String(topics.length);
+    }
 
-      (stage.groups || []).forEach((group) => groupsBox.appendChild(createGroup(group)));
-      if ((stage.groups || []).length === 0) {
-        groupsBox.appendChild(createGroup());
-      }
-
-      node.querySelector('.add-group').onclick = () => {
-        groupsBox.appendChild(createGroup());
-        markDirty();
-      };
-      node.querySelector('.remove-stage').onclick = () => {
-        node.remove();
-        markDirty();
-      };
-
+    function wireInputs(node) {
       node.querySelectorAll('input,textarea,select').forEach((el) => {
-        el.addEventListener('input', markDirty);
-        el.addEventListener('change', markDirty);
+        el.addEventListener('input', () => { setDirty(true); updateCounters(); });
+        el.addEventListener('change', () => { setDirty(true); updateCounters(); });
       });
+    }
 
+    function createTopic(topic = {}) {
+      const node = document.getElementById('topicTpl').content.firstElementChild.cloneNode(true);
+      node.querySelector('.topic-id').value = topic.topic_id || '';
+      node.querySelector('.topic-title').value = topic.title || '';
+      node.querySelector('.topic-weight').value = topic.weight ?? 1;
+      node.querySelector('.topic-goal').value = topic.goal || '';
+      node.querySelector('.topic-micro').value = topic.micro_prompt || '';
+      node.querySelector('.topic-type').value = topic.type || 'question_goal';
+      node.querySelector('.topic-fact').value = topic.fact_key || '';
+      node.querySelector('.topic-required').checked = !!topic.required;
+      node.querySelector('.topic-record').checked = topic.record_on_close !== false;
+      node.querySelector('.topic-confirm').checked = !!topic.confirmation_required_on_change;
+
+      node.querySelector('.remove-topic').onclick = () => {
+        node.remove();
+        setDirty(true);
+        updateCounters();
+      };
+
+      wireInputs(node);
       return node;
     }
 
@@ -288,60 +318,54 @@ $topics = topics_data();
       node.querySelector('.group-id').value = group.group_id || '';
       node.querySelector('.group-title').value = group.title || '';
       node.querySelector('.group-min').value = group.min_points_to_advance ?? 0;
-      const topicsBox = node.querySelector('.topics');
 
+      const topicsBox = node.querySelector('.topics');
       (group.topics || []).forEach((topic) => topicsBox.appendChild(createTopic(topic)));
-      if ((group.topics || []).length === 0) {
-        topicsBox.appendChild(createTopic());
-      }
+      if ((group.topics || []).length === 0) topicsBox.appendChild(createTopic());
 
       node.querySelector('.add-topic').onclick = () => {
         topicsBox.appendChild(createTopic());
-        markDirty();
+        setDirty(true);
+        updateCounters();
       };
       node.querySelector('.remove-group').onclick = () => {
         node.remove();
-        markDirty();
+        setDirty(true);
+        updateCounters();
       };
 
-      node.querySelectorAll('input,textarea,select').forEach((el) => {
-        el.addEventListener('input', markDirty);
-        el.addEventListener('change', markDirty);
-      });
-
+      wireInputs(node);
       return node;
     }
 
-    function createTopic(topic = {}) {
-      const node = document.getElementById('topicTpl').content.firstElementChild.cloneNode(true);
-      node.querySelector('.topic-id').value = topic.topic_id || '';
-      node.querySelector('.topic-title').value = topic.title || '';
-      node.querySelector('.topic-goal').value = topic.goal || '';
-      node.querySelector('.topic-micro').value = topic.micro_prompt || '';
-      node.querySelector('.topic-weight').value = topic.weight ?? 1;
-      node.querySelector('.topic-type').value = topic.type || 'question_goal';
-      node.querySelector('.topic-required').checked = !!topic.required;
-      node.querySelector('.topic-record').checked = topic.record_on_close !== false;
-      node.querySelector('.topic-fact').value = topic.fact_key || '';
-      node.querySelector('.topic-confirm').checked = !!topic.confirmation_required_on_change;
+    function createStage(stage = {}) {
+      const node = document.getElementById('stageTpl').content.firstElementChild.cloneNode(true);
+      node.querySelector('.stage-id').value = stage.stage_id || '';
+      node.querySelector('.stage-title').value = stage.title || '';
 
-      node.querySelector('.remove-topic').onclick = () => {
+      const groupsBox = node.querySelector('.groups');
+      (stage.groups || []).forEach((group) => groupsBox.appendChild(createGroup(group)));
+      if ((stage.groups || []).length === 0) groupsBox.appendChild(createGroup());
+
+      node.querySelector('.add-group').onclick = () => {
+        groupsBox.appendChild(createGroup());
+        setDirty(true);
+        updateCounters();
+      };
+      node.querySelector('.remove-stage').onclick = () => {
         node.remove();
-        markDirty();
+        setDirty(true);
+        updateCounters();
       };
 
-      node.querySelectorAll('input,textarea,select').forEach((el) => {
-        el.addEventListener('input', markDirty);
-        el.addEventListener('change', markDirty);
-      });
-
+      wireInputs(node);
       return node;
     }
 
     function collectData() {
-      const stages = Array.from(builder.querySelectorAll('.stage-card')).map((stageNode) => {
-        const groups = Array.from(stageNode.querySelectorAll('.group-card')).map((groupNode) => {
-          const topics = Array.from(groupNode.querySelectorAll('.topic-card')).map((topicNode) => ({
+      const stages = Array.from(builder.querySelectorAll('.stage-block')).map((stageNode) => {
+        const groups = Array.from(stageNode.querySelectorAll('.group-block')).map((groupNode) => {
+          const topics = Array.from(groupNode.querySelectorAll('.topic-block')).map((topicNode) => ({
             topic_id: topicNode.querySelector('.topic-id').value.trim(),
             title: topicNode.querySelector('.topic-title').value.trim(),
             weight: Number(topicNode.querySelector('.topic-weight').value || 0),
@@ -375,28 +399,27 @@ $topics = topics_data();
     function renderInitial() {
       builder.innerHTML = '';
       (initialTopics.stages || []).forEach((stage) => builder.appendChild(createStage(stage)));
-      if ((initialTopics.stages || []).length === 0) {
-        builder.appendChild(createStage());
-      }
-      dirty = false;
+      if ((initialTopics.stages || []).length === 0) builder.appendChild(createStage());
+      setDirty(false);
+      updateCounters();
     }
 
     addStageBtn.onclick = () => {
       builder.appendChild(createStage());
-      markDirty();
+      setDirty(true);
+      updateCounters();
     };
 
     form.addEventListener('submit', () => {
-      const payload = collectData();
-      hiddenInput.value = JSON.stringify(payload);
-      dirty = false;
+      hiddenInput.value = JSON.stringify(collectData());
+      setDirty(false);
       saveBtn.textContent = 'Zapisywanie...';
     });
 
     window.addEventListener('beforeunload', (e) => {
       if (!dirty) return;
       e.preventDefault();
-      e.returnValue = 'Masz niezapisane zmiany. Czy chcesz je zapisać przed wyjściem?';
+      e.returnValue = 'Masz niezapisane zmiany. Czy na pewno chcesz wyjść bez zapisu?';
     });
 
     renderInitial();

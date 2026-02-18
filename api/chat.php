@@ -35,11 +35,18 @@ if (!file_exists($userPath)) {
 $state = read_json_file($userPath, []);
 $prompt = build_turn_prompt($settings, $topics, $state, $userMessage);
 
-header('Content-Type: text/event-stream');
-header('Cache-Control: no-cache');
+header('Content-Type: text/event-stream; charset=utf-8');
+header('Cache-Control: no-cache, no-transform');
 header('Connection: keep-alive');
 header('X-Accel-Buffering: no');
-while (ob_get_level() > 0) { ob_end_flush(); }
+header('Content-Encoding: identity');
+if (function_exists('apache_setenv')) {
+    @apache_setenv('no-gzip', '1');
+}
+@ini_set('zlib.output_compression', '0');
+while (ob_get_level() > 0) {
+    ob_end_flush();
+}
 ob_implicit_flush(true);
 echo ": stream-open\n\n";
 flush();
@@ -582,9 +589,7 @@ curl_setopt_array($ch, [
     ],
     CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
     CURLOPT_WRITEFUNCTION => static function ($ch, $data) use (&$buffer, &$assistantRaw, &$hasStreamDelta) {
-        $buffer .= str_replace("
-", "
-", $data);
+        $buffer .= str_replace("\r\n", "\n", $data);
         $events = parse_openai_sse_events($buffer);
 
         foreach ($events as $rawEvent) {
@@ -618,13 +623,13 @@ curl_setopt_array($ch, [
             flush();
         }
 
-        return strlen($data);
     },
     CURLOPT_TIMEOUT => 120,
     CURLOPT_RETURNTRANSFER => false,
     CURLOPT_BUFFERSIZE => 1024,
     CURLOPT_TCP_NODELAY => 1,
     CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
+    CURLOPT_CONNECTTIMEOUT => 20,
 ]);
 
 curl_exec($ch);
