@@ -23,7 +23,7 @@
       <header>
         <button id="toggleSidebar">☰</button>
         <h1>Emma — doradca zawodowy</h1>
-        <span id="apiStatus" title="Diagnostyka API">●</span>
+        <button id="apiStatus" class="status-dot" title="Diagnostyka API (kliknij, aby otworzyć modal)" aria-label="Diagnostyka API">●</button>
       </header>
       <div class="load-all"><a href="#" id="loadAll">Wczytaj całość rozmowy</a></div>
       <div id="chat" class="chat"></div>
@@ -33,6 +33,20 @@
       </form>
     </main>
   </div>
+
+  <div id="diagModal" class="diag-modal hidden" role="dialog" aria-modal="true" aria-labelledby="diagTitle">
+    <div class="diag-card">
+      <div class="diag-header">
+        <h2 id="diagTitle">Diagnostyka API i streamingu</h2>
+        <div class="diag-actions">
+          <button id="copyDiag" type="button">Kopiuj raport</button>
+          <button id="closeDiag" type="button">Zamknij</button>
+        </div>
+      </div>
+      <pre id="diagContent" class="diag-content"></pre>
+    </div>
+  </div>
+
   <script src="public/app.js"></script>
 </body>
 </html>

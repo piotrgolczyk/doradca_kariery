@@ -13,9 +13,17 @@ header { display: flex; align-items: center; gap: 12px; padding: 12px; }
 .prompt-box { margin-top: 12px; }
 .prompt-title { display: flex; justify-content: space-between; font-size: 12px; }
 #promptPreview { font-size: 11px; max-height: 220px; overflow: auto; background: #f3f4f6; padding: 8px; border-radius: 8px; }
-#apiStatus { margin-left: auto; color: #dc2626; cursor: help; }
-#apiStatus.ok { color: #16a34a; }
+.status-dot { margin-left: auto; color: #dc2626; cursor: pointer; border: none; background: transparent; font-size: 22px; line-height: 1; }
+.status-dot.ok { color: #16a34a; }
 .admin-wrap { max-width: 900px; margin: 20px auto; background: #fff; padding: 20px; border-radius: 12px; }
 .admin-form { display: grid; gap: 10px; }
 .admin-form textarea, .admin-form input { width: 100%; }
 .success { color: #16a34a; }
+
+.diag-modal { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.55); display: flex; align-items: center; justify-content: center; padding: 24px; z-index: 99; }
+.diag-modal.hidden { display: none; }
+.diag-card { width: min(980px, 95vw); max-height: 90vh; background: #fff; border-radius: 12px; border: 1px solid #e5e7eb; display: flex; flex-direction: column; }
+.diag-header { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 12px 14px; border-bottom: 1px solid #e5e7eb; }
+.diag-header h2 { margin: 0; font-size: 16px; }
+.diag-actions { display: flex; gap: 8px; }
+.diag-content { margin: 0; padding: 14px; font-size: 12px; white-space: pre-wrap; overflow: auto; line-height: 1.45; }
