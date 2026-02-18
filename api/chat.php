@@ -25,6 +25,18 @@ if ($userId === '' || $userMessage === '') {
     json_response(['error' => 'Brak user_id albo user_message'], 422);
 }
 
+
+function sse_emit(string $event, array $payload): void
+{
+    echo 'event: ' . $event . "\n";
+    echo 'data: ' . json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n\n";
+}
+
+function sse_emit_comment(string $text): void
+{
+    echo ': ' . $text . "\n\n";
+}
+
 $settings = settings();
 $topics = topics_data();
 $userPath = user_file_path($userId);
@@ -35,14 +47,36 @@ if (!file_exists($userPath)) {
 $state = read_json_file($userPath, []);
 $prompt = build_turn_prompt($settings, $topics, $state, $userMessage);
 
-header('Content-Type: text/event-stream');
-header('Cache-Control: no-cache');
+if (session_status() === PHP_SESSION_ACTIVE) {
+    session_write_close();
+}
+@ini_set('output_buffering', '0');
+@ini_set('implicit_flush', '1');
+@ini_set('zlib.output_compression', '0');
+if (function_exists('apache_setenv')) {
+    @apache_setenv('no-gzip', '1');
+    @apache_setenv('dont-vary', '1');
+}
+
+header('Content-Type: text/event-stream; charset=utf-8');
+header('Cache-Control: no-cache, no-transform');
 header('Connection: keep-alive');
+header('X-Accel-Buffering: no');
+header('Content-Encoding: identity');
+
+while (ob_get_level() > 0) {
+    ob_end_flush();
+}
+ob_implicit_flush(true);
+
+sse_emit_comment('stream-open');
+// Wypycha pierwszy większy chunk przez bufory hostingu/proxy.
+sse_emit_comment(str_repeat('pad', 12000));
+flush();
 
 $apiKey = trim((string)($settings['openai_api_key'] ?? ''));
 if ($apiKey === '') {
-    echo "event: error\n";
-    echo 'data: ' . json_encode(['message' => 'Brak OPENAI API key w ustawieniach admina.']) . "\n\n";
+    sse_emit('error', ['message' => 'Brak OPENAI API key w ustawieniach admina.']);
     flush();
     exit;
 }
@@ -174,7 +208,11 @@ ASSISTANT_MESSAGE:
         ],
     ];
 
-    $ch = curl_init($apiBase . '/responses');
+    
+$streamPending = '';
+$streamLastFlush = microtime(true);
+$streamLastPing = microtime(true);
+$ch = curl_init($apiBase . '/responses');
     curl_setopt_array($ch, [
         CURLOPT_POST => true,
         CURLOPT_HTTPHEADER => [
@@ -272,7 +310,11 @@ ASSISTANT_MESSAGE:
         ],
     ];
 
-    $ch = curl_init($apiBase . '/responses');
+    
+$streamPending = '';
+$streamLastFlush = microtime(true);
+$streamLastPing = microtime(true);
+$ch = curl_init($apiBase . '/responses');
     curl_setopt_array($ch, [
         CURLOPT_POST => true,
         CURLOPT_HTTPHEADER => [
@@ -328,10 +370,199 @@ ASSISTANT_MESSAGE:
 
     $oneLiner = mb_substr(trim((string)($json['one_liner'] ?? '')), 0, 140);
     $factValue = isset($json['fact_value']) ? trim((string)$json['fact_value']) : '';
+    $memoryKeep = (bool)($json['memory_keep'] ?? false);
+    $memoryReason = mb_substr(trim((string)($json['memory_reason'] ?? '')), 0, 200);
     return [
         'one_liner' => $oneLiner,
         'fact_value' => $factValue,
+        'memory_keep' => $memoryKeep,
+        'memory_reason' => $memoryReason,
     ];
+}
+
+function should_store_topic_memory(array $topic, ?array $summary): bool
+{
+    if (!is_array($summary)) {
+        return !empty($topic['required']);
+    }
+
+    if (!empty($summary['memory_keep'])) {
+        return true;
+    }
+
+    // awaryjnie zachowaj tylko required, gdy model nie zwrócił keep=true
+    return !empty($topic['required']) && trim((string)($summary['one_liner'] ?? '')) !== '';
+}
+
+
+function compute_group_progress(array $groupMeta, array $topicState): array
+{
+    $required = (int)($groupMeta['min_points_to_advance'] ?? 0);
+    $collected = 0;
+    foreach (($groupMeta['topics'] ?? []) as $topic) {
+        $tid = (string)($topic['topic_id'] ?? '');
+        if ($tid !== '' && (($topicState[$tid]['status'] ?? '') === 'achieved')) {
+            $collected += (int)($topic['weight'] ?? 0);
+        }
+    }
+    return ['required' => $required, 'collected' => $collected];
+}
+
+function maybe_advance_group(array $topics, array &$state, int $now): ?array
+{
+    $stageId = (string)($state['stage_state']['stage_id'] ?? '');
+    $groupId = (string)($state['stage_state']['group_id'] ?? '');
+    if ($stageId === '' || $groupId === '') {
+        return null;
+    }
+
+    $currentGroup = find_group_meta($topics, $stageId, $groupId);
+    if (!$currentGroup) {
+        return null;
+    }
+
+    $progress = compute_group_progress($currentGroup, $state['topic_state'] ?? []);
+    if ($progress['collected'] < $progress['required']) {
+        return null;
+    }
+
+    $groups = ordered_groups($topics);
+    $currentIndex = null;
+    foreach ($groups as $idx => $g) {
+        if (($g['stage_id'] ?? '') === $stageId && ($g['group_id'] ?? '') === $groupId) {
+            $currentIndex = $idx;
+            break;
+        }
+    }
+    if ($currentIndex === null) {
+        return null;
+    }
+    $nextGroup = $groups[$currentIndex + 1] ?? null;
+    if (!$nextGroup) {
+        return null;
+    }
+
+    $summaryTopics = [];
+    foreach (($currentGroup['topics'] ?? []) as $topic) {
+        $tid = (string)($topic['topic_id'] ?? '');
+        if ($tid !== '' && (($state['topic_state'][$tid]['status'] ?? '') === 'achieved')) {
+            $summaryTopics[] = (string)($topic['title'] ?? $tid);
+        }
+    }
+
+    $state['stage_state']['stage_id'] = (string)$nextGroup['stage_id'];
+    $state['stage_state']['group_id'] = (string)$nextGroup['group_id'];
+    $firstTopicId = first_topic_id_in_group($nextGroup);
+    if ($firstTopicId) {
+        $state['active_topic']['topic_id'] = $firstTopicId;
+        $state['active_topic']['since'] = $now;
+        $state['active_topic']['attempts'] = 0;
+        $state['active_topic']['mode'] = 'normal';
+        $state['active_topic']['pending_confirmation'] = null;
+    }
+
+    $state['pending_transition_announcement'] = [
+        'from_group_title' => (string)($currentGroup['group_title'] ?? ''),
+        'to_group_title' => (string)($nextGroup['group_title'] ?? ''),
+        'achieved_topics' => array_slice($summaryTopics, -6),
+        'from_points' => $progress['collected'],
+        'required_points' => $progress['required'],
+        'created_at' => $now,
+    ];
+
+    return $state['pending_transition_announcement'];
+}
+
+
+function guess_topic_id_from_text(array $topics, array $state, string $text): ?string
+{
+    $normalized = mb_strtolower($text);
+    if (trim($normalized) === '') {
+        return null;
+    }
+
+    $closedIds = array_map(static fn($e) => (string)($e['topic_id'] ?? ''), $state['closed_topics_log'] ?? []);
+    $closedLookup = array_values(array_filter(array_unique($closedIds), static fn($id) => $id !== ''));
+
+    $candidates = [];
+    foreach (flatten_topics($topics) as $topic) {
+        $tid = (string)($topic['topic_id'] ?? '');
+        if ($tid === '') {
+            continue;
+        }
+        if (!in_array($tid, $closedLookup, true)) {
+            continue;
+        }
+        $title = mb_strtolower((string)($topic['title'] ?? ''));
+        if ($title !== '' && str_contains($normalized, $title)) {
+            return $tid;
+        }
+        $candidates[] = ['id' => $tid, 'title' => $title];
+    }
+
+    foreach ($candidates as $c) {
+        if ($c['title'] === '') {
+            continue;
+        }
+        foreach (preg_split('/\s+/', $c['title']) as $word) {
+            $word = trim($word);
+            if (mb_strlen($word) >= 4 && str_contains($normalized, $word)) {
+                return $c['id'];
+            }
+        }
+    }
+
+    return null;
+}
+
+function parse_openai_sse_events(string &$buffer): array
+{
+    $events = [];
+    while (($sep = strpos($buffer, "\n\n")) !== false) {
+        $raw = substr($buffer, 0, $sep);
+        $buffer = substr($buffer, $sep + 2);
+
+        $eventType = 'message';
+        $dataLines = [];
+        foreach (preg_split('/\r?\n/', trim($raw)) as $line) {
+            if ($line === '') {
+                continue;
+            }
+            if (str_starts_with($line, 'event:')) {
+                $eventType = trim(substr($line, 6));
+                continue;
+            }
+            if (str_starts_with($line, 'data:')) {
+                $dataLines[] = trim(substr($line, 5));
+            }
+        }
+        if (!empty($dataLines)) {
+            $events[] = ['event' => $eventType, 'data' => implode("
+", $dataLines)];
+        }
+    }
+    return $events;
+}
+
+function extract_delta_from_openai_event(array $evt): string
+{
+    $type = (string)($evt['type'] ?? '');
+    if ($type === 'response.output_text.delta') {
+        return (string)($evt['delta'] ?? '');
+    }
+
+    if ($type === 'response.content_part.added') {
+        $part = $evt['part'] ?? null;
+        if (is_array($part) && (($part['type'] ?? '') === 'output_text')) {
+            return (string)($part['text'] ?? '');
+        }
+    }
+
+    if ($type === 'response.output_text.done') {
+        return (string)($evt['text'] ?? '');
+    }
+
+    return '';
 }
 
 function extract_assistant_and_control(string $assistantRaw): array
@@ -395,7 +626,12 @@ $backendDebug = [
     'summarized_topics' => [],
     'topic_achievement_inferred' => false,
     'topic_achievement_inferred_confidence' => 0.0,
+    'fact_overwrites' => [],
 ];
+
+$streamPending = '';
+$streamLastFlush = microtime(true);
+$streamLastPing = microtime(true);
 $ch = curl_init($apiBase . '/responses');
 curl_setopt_array($ch, [
     CURLOPT_POST => true,
@@ -404,43 +640,63 @@ curl_setopt_array($ch, [
         'Authorization: Bearer ' . $apiKey,
     ],
     CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
-    CURLOPT_WRITEFUNCTION => static function ($ch, $data) use (&$buffer, &$assistantRaw, &$hasStreamDelta) {
-        $buffer .= $data;
-        while (($pos = strpos($buffer, "\n")) !== false) {
-            $line = trim(substr($buffer, 0, $pos));
-            $buffer = substr($buffer, $pos + 1);
-            if ($line === '' || !str_starts_with($line, 'data:')) {
+    CURLOPT_WRITEFUNCTION => static function ($ch, $data) use (&$buffer, &$assistantRaw, &$hasStreamDelta, &$streamPending, &$streamLastFlush, &$streamLastPing) {
+        $buffer .= str_replace("\r\n", "\n", $data);
+        $events = parse_openai_sse_events($buffer);
+        $nowTs = microtime(true);
+
+        // Ping utrzymujący strumień żywy.
+        if (($nowTs - $streamLastPing) >= 1.2) {
+            sse_emit_comment('ping');
+            $streamLastPing = $nowTs;
+            flush();
+        }
+
+        foreach ($events as $rawEvent) {
+            $json = trim((string)($rawEvent['data'] ?? ''));
+            if ($json === '' || $json === '[DONE]') {
                 continue;
             }
-            $json = trim(substr($line, 5));
-            if ($json === '[DONE]') {
-                return strlen($data);
-            }
+
             $evt = json_decode($json, true);
             if (!is_array($evt)) {
                 continue;
             }
-            $type = (string)($evt['type'] ?? '');
-            $delta = '';
-            if ($type === 'response.output_text.delta') {
-                $delta = (string)($evt['delta'] ?? '');
-                if ($delta !== '') {
-                    $hasStreamDelta = true;
-                }
-            } elseif ($type === 'response.output_text.done' && !$hasStreamDelta) {
-                // Fallback tylko gdy upstream nie wysłał delta.
-                $delta = (string)($evt['text'] ?? '');
+
+            $delta = extract_delta_from_openai_event($evt);
+            if ($delta === '') {
+                continue;
             }
-            if ($delta !== '') {
-                $assistantRaw .= $delta;
-                echo 'data: ' . json_encode(['token' => $delta], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n\n";
+
+            $type = (string)($evt['type'] ?? '');
+            if ($type === 'response.output_text.delta' || $type === 'response.content_part.added') {
+                $hasStreamDelta = true;
+            }
+            if ($type === 'response.output_text.done' && $hasStreamDelta) {
+                continue;
+            }
+
+            $assistantRaw .= $delta;
+            $streamPending .= $delta;
+
+            $chunkReady = mb_strlen($streamPending) >= 120;
+            $timeReady = ($nowTs - $streamLastFlush) >= 0.10;
+            if ($chunkReady || $timeReady) {
+                sse_emit('token', ['token' => $streamPending]);
+                $streamPending = '';
+                $streamLastFlush = $nowTs;
                 flush();
             }
         }
+
         return strlen($data);
     },
     CURLOPT_TIMEOUT => 120,
     CURLOPT_RETURNTRANSFER => false,
+    CURLOPT_BUFFERSIZE => 1024,
+    CURLOPT_TCP_NODELAY => 1,
+    CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
+    CURLOPT_CONNECTTIMEOUT => 20,
 ]);
 
 curl_exec($ch);
@@ -448,15 +704,19 @@ $curlErr = curl_error($ch);
 $status = curl_getinfo($ch, CURLINFO_HTTP_CODE);
 curl_close($ch);
 
+if ($streamPending !== '') {
+    sse_emit('token', ['token' => $streamPending]);
+    $streamPending = '';
+    flush();
+}
+
 if ($curlErr) {
-    echo "event: error\n";
-    echo 'data: ' . json_encode(['message' => 'Błąd połączenia z OpenAI: ' . $curlErr]) . "\n\n";
+    sse_emit('error', ['message' => 'Błąd połączenia z OpenAI: ' . $curlErr]);
     flush();
     exit;
 }
 if ($status >= 400) {
-    echo "event: error\n";
-    echo 'data: ' . json_encode(['message' => 'OpenAI HTTP ' . $status]) . "\n\n";
+    sse_emit('error', ['message' => 'OpenAI HTTP ' . $status]);
     flush();
     exit;
 }
@@ -556,16 +816,20 @@ foreach (($control['events'] ?? []) as $event) {
                 'topic_id' => $tid,
                 'summary_ok' => is_array($summary),
                 'one_liner_len' => mb_strlen($oneLiner),
+                'memory_keep' => (bool)($summary['memory_keep'] ?? false),
+                'memory_reason' => (string)($summary['memory_reason'] ?? ''),
             ];
 
-            if (!empty($topicRef['topic']['record_on_close'])) {
-                $state['closed_topics_log'][] = ['topic_id' => $tid, 'created_at' => $now, 'text' => $oneLiner];
+            if (!empty($topicRef['topic']['record_on_close']) && should_store_topic_memory($topicRef['topic'], $summary)) {
+                if (trim($oneLiner) !== '') {
+                    $state['closed_topics_log'][] = ['topic_id' => $tid, 'created_at' => $now, 'text' => $oneLiner];
+                }
             }
             if (!empty($topicRef['topic']['fact_key'])) {
                 $factKey = (string)$topicRef['topic']['fact_key'];
                 $value = trim((string)($summary['fact_value'] ?? ''));
                 if ($value === '' || strtolower($value) === 'null') {
-                    $value = mb_substr($assistantText, 0, 120);
+                    $value = mb_substr($userMessage, 0, 160);
                 }
                 $existingIndex = null;
                 foreach (($state['profile_facts'] ?? []) as $idx => $fact) {
@@ -585,16 +849,15 @@ foreach (($control['events'] ?? []) as $event) {
                     $state['profile_facts'][] = $newFact;
                 } else {
                     $oldValue = (string)($state['profile_facts'][$existingIndex]['value'] ?? '');
-                    if ($oldValue !== $value && !empty($topicRef['topic']['confirmation_required_on_change'])) {
-                        $state['active_topic']['mode'] = 'confirmation_pending';
-                        $state['active_topic']['pending_confirmation'] = [
+                    $state['profile_facts'][$existingIndex] = $newFact;
+
+                    if ($oldValue !== '' && $oldValue !== $value) {
+                        $backendDebug['fact_overwrites'][] = [
                             'fact_key' => $factKey,
                             'old_value' => $oldValue,
                             'new_value' => $value,
-                            'question' => 'Widzę inną wartość niż wcześniej. Czy chcesz zaktualizować tę informację?',
+                            'source_topic_id' => $tid,
                         ];
-                    } else {
-                        $state['profile_facts'][$existingIndex] = $newFact;
                     }
                 }
             }
@@ -611,6 +874,49 @@ foreach (($control['events'] ?? []) as $event) {
         ];
     }
 }
+
+
+$revisitTopicId = '';
+foreach (($control['events'] ?? []) as $event) {
+    if (($event['type'] ?? '') === 'user_requested_past_topic') {
+        $candidate = trim((string)($event['topic_id'] ?? ''));
+        if ($candidate === '') {
+            $candidate = (string)(guess_topic_id_from_text($topics, $state, $userMessage) ?? '');
+        }
+        if ($candidate !== '' && find_topic($topics, $candidate)) {
+            $revisitTopicId = $candidate;
+            break;
+        }
+    }
+}
+if ($revisitTopicId !== '') {
+    $state['active_topic']['topic_id'] = $revisitTopicId;
+    $state['active_topic']['since'] = $now;
+    $state['active_topic']['attempts'] = 0;
+    $state['active_topic']['mode'] = 'normal';
+    $state['active_topic']['pending_confirmation'] = null;
+    $state['topic_state'][$revisitTopicId]['status'] = 'in_progress';
+}
+
+
+foreach (($control['notes_to_add'] ?? []) as $note) {
+    if (!is_array($note)) {
+        continue;
+    }
+    $noteText = trim((string)($note['text'] ?? ''));
+    $noteKeep = (bool)($note['memory_keep'] ?? false);
+    if (!$noteKeep || $noteText === '') {
+        continue;
+    }
+
+    $state['closed_topics_log'][] = [
+        'topic_id' => (string)($note['topic_id'] ?? ($state['active_topic']['topic_id'] ?? 'manual_note')),
+        'created_at' => $now,
+        'text' => mb_substr($noteText, 0, 140),
+    ];
+}
+
+maybe_advance_group($topics, $state, $now);
 
 $maxAttempts = (int)($settings['max_attempts_before_switch'] ?? 2);
 if (($control['active_topic_action'] ?? 'continue') === 'switch' || (int)($state['active_topic']['attempts'] ?? 0) > $maxAttempts) {
@@ -649,8 +955,13 @@ append_chatlog($userId, [
 
 $ui = ui_payload($topics, $state, $prompt['prompt_debug_text'], $settings, $userId);
 
-echo "event: done\n";
-echo 'data: ' . json_encode([
+$pendingTransition = $state['pending_transition_announcement'] ?? null;
+if ($pendingTransition !== null) {
+    $state['pending_transition_announcement'] = null;
+    atomic_write($userPath, json_encode($state, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT));
+}
+
+sse_emit('done', [
     'assistant_text' => $assistantText,
     'control_json' => $control,
     'sidebar' => $ui['sidebar'],
@@ -659,5 +970,6 @@ echo 'data: ' . json_encode([
     'chatlog_tail' => $ui['chatlog_tail'],
     'summarizer_prompt_used' => $summarizerPrompt !== '',
     'backend_debug' => $backendDebug,
-], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n\n";
+    'pending_transition_announcement' => $pendingTransition,
+]);
 flush();

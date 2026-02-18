@@ -14,6 +14,7 @@
       <section><strong>Nadchodzące 3:</strong><ol id="upcomingTopics"></ol></section>
       <section><strong>Historia (oneliners):</strong><ul id="oneLiners"></ul></section>
       <section class="progress"><strong>Punkty:</strong><div id="points"></div></section>
+      <section class="progress"><strong>Etap:</strong><div id="stageProgress"></div></section>
       <section class="prompt-box">
         <div class="prompt-title">Aktualny prompt <button id="copyPrompt">Kopiuj</button></div>
         <pre id="promptPreview"></pre>

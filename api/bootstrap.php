@@ -232,7 +232,12 @@ function pick_candidate_topics(array $topics, array $state): array
     }));
     usort($previous, static fn($a, $b) => (int)($b['weight'] ?? 0) <=> (int)($a['weight'] ?? 0));
 
-    $wild = $all;
+    $unresolvedAll = array_values(array_filter($all, static function ($t) use ($topicState) {
+        $status = $topicState[$t['topic_id']]['status'] ?? 'not_started';
+        return in_array($status, ['not_started', 'in_progress'], true);
+    }));
+
+    $wild = $unresolvedAll;
     shuffle($wild);
 
     $out = array_slice($current, 0, 7);
@@ -248,8 +253,8 @@ function pick_candidate_topics(array $topics, array $state): array
         return true;
     }));
 
-    while (count($out) < 3 && count($all) > count($out)) {
-        foreach ($all as $topic) {
+    while (count($out) < 3 && count($unresolvedAll) > count($out)) {
+        foreach ($unresolvedAll as $topic) {
             if (!isset($seen[$topic['topic_id']])) {
                 $seen[$topic['topic_id']] = true;
                 $out[] = $topic;
@@ -299,6 +304,7 @@ function build_turn_prompt(array $settings, array $topics, array $state, string 
     $turnContext[] = 'points_collected: ' . $progress['collected'];
     $turnContext[] = 'points_required: ' . $progress['required'];
     $turnContext[] = 'points_missing: ' . $progress['missing'];
+    $turnContext[] = 'pending_transition_announcement: ' . json_encode($state['pending_transition_announcement'] ?? null, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     $turnContext[] = '';
     $turnContext[] = 'PROFILE_FACTS:';
     foreach ($profileFacts as $fact) {
@@ -345,6 +351,44 @@ function build_turn_prompt(array $settings, array $topics, array $state, string 
     ];
 }
 
+function ordered_groups(array $topics): array
+{
+    $groups = [];
+    foreach ($topics['stages'] as $stage) {
+        foreach ($stage['groups'] as $group) {
+            $groups[] = [
+                'stage_id' => (string)($stage['stage_id'] ?? ''),
+                'stage_title' => (string)($stage['title'] ?? ''),
+                'group_id' => (string)($group['group_id'] ?? ''),
+                'group_title' => (string)($group['title'] ?? ''),
+                'min_points_to_advance' => (int)($group['min_points_to_advance'] ?? 0),
+                'topics' => $group['topics'] ?? [],
+            ];
+        }
+    }
+    return $groups;
+}
+
+function first_topic_id_in_group(array $groupMeta): ?string
+{
+    foreach (($groupMeta['topics'] ?? []) as $topic) {
+        if (!empty($topic['topic_id'])) {
+            return (string)$topic['topic_id'];
+        }
+    }
+    return null;
+}
+
+function find_group_meta(array $topics, string $stageId, string $groupId): ?array
+{
+    foreach (ordered_groups($topics) as $groupMeta) {
+        if ($groupMeta['stage_id'] === $stageId && $groupMeta['group_id'] === $groupId) {
+            return $groupMeta;
+        }
+    }
+    return null;
+}
+
 function ui_payload(array $topics, array $state, string $promptDebugText, array $settings, string $userId): array
 {
     [$stage, $group, $firstTopic] = get_first_topic($topics);
@@ -354,16 +398,30 @@ function ui_payload(array $topics, array $state, string $promptDebugText, array 
     $chatlog = read_chatlog_lines($userId);
     $limit = (int)($settings['show_chatlog_lines_default'] ?? 100);
     $progress = points_progress($topics, $state);
+    $groups = ordered_groups($topics);
+    $currentGroupId = (string)($state['stage_state']['group_id'] ?? $group['group_id']);
+    $currentStageId = (string)($state['stage_state']['stage_id'] ?? $stage['stage_id']);
+    $currentGroupIndex = 0;
+    foreach ($groups as $idx => $groupMeta) {
+        if ($groupMeta['group_id'] === $currentGroupId && $groupMeta['stage_id'] === $currentStageId) {
+            $currentGroupIndex = $idx;
+            break;
+        }
+    }
+    $currentGroupMeta = $groups[$currentGroupIndex] ?? null;
+    $nextGroupMeta = $groups[$currentGroupIndex + 1] ?? null;
+
+    $upcoming = array_values(array_filter(array_map(static fn($t) => [
+        'topic_id' => $t['topic_id'],
+        'title' => $t['title'],
+        'weight' => (int)($t['weight'] ?? 0),
+    ], $candidates), static fn($t) => (string)$t['topic_id'] !== $activeId));
 
     return [
         'sidebar' => [
             'active_topic_title' => (string)($activeRef['topic']['title'] ?? ''),
             'active_topic_id' => $activeId,
-            'upcoming_topics' => array_map(static fn($t) => [
-                'topic_id' => $t['topic_id'],
-                'title' => $t['title'],
-                'weight' => (int)($t['weight'] ?? 0),
-            ], array_slice($candidates, 0, 3)),
+            'upcoming_topics' => array_slice($upcoming, 0, 3),
             'oneliners' => array_slice(array_values(array_map(static fn($entry) => [
                 'topic_id' => $entry['topic_id'] ?? '',
                 'text' => $entry['text'] ?? '',
@@ -376,6 +434,11 @@ function ui_payload(array $topics, array $state, string $promptDebugText, array 
             'points_missing' => $progress['missing'],
             'stage_id' => (string)($state['stage_state']['stage_id'] ?? $stage['stage_id']),
             'group_id' => (string)($state['stage_state']['group_id'] ?? $group['group_id']),
+            'current_group_order' => $currentGroupIndex + 1,
+            'total_groups' => count($groups),
+            'current_stage_title' => (string)($currentGroupMeta['stage_title'] ?? ($stage['title'] ?? '')),
+            'current_group_title' => (string)($currentGroupMeta['group_title'] ?? ($group['title'] ?? '')),
+            'next_group_title' => (string)($nextGroupMeta['group_title'] ?? ''),
         ],
         'prompt_debug_text' => $promptDebugText,
         'chatlog_tail' => array_slice($chatlog, -$limit),
