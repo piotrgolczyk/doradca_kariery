@@ -25,6 +25,18 @@ if ($userId === '' || $userMessage === '') {
     json_response(['error' => 'Brak user_id albo user_message'], 422);
 }
 
+
+function sse_emit(string $event, array $payload): void
+{
+    echo 'event: ' . $event . "\n";
+    echo 'data: ' . json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n\n";
+}
+
+function sse_emit_comment(string $text): void
+{
+    echo ': ' . $text . "\n\n";
+}
+
 $settings = settings();
 $topics = topics_data();
 $userPath = user_file_path($userId);
@@ -35,26 +47,36 @@ if (!file_exists($userPath)) {
 $state = read_json_file($userPath, []);
 $prompt = build_turn_prompt($settings, $topics, $state, $userMessage);
 
+if (session_status() === PHP_SESSION_ACTIVE) {
+    session_write_close();
+}
+@ini_set('output_buffering', '0');
+@ini_set('implicit_flush', '1');
+@ini_set('zlib.output_compression', '0');
+if (function_exists('apache_setenv')) {
+    @apache_setenv('no-gzip', '1');
+    @apache_setenv('dont-vary', '1');
+}
+
 header('Content-Type: text/event-stream; charset=utf-8');
 header('Cache-Control: no-cache, no-transform');
 header('Connection: keep-alive');
 header('X-Accel-Buffering: no');
 header('Content-Encoding: identity');
-if (function_exists('apache_setenv')) {
-    @apache_setenv('no-gzip', '1');
-}
-@ini_set('zlib.output_compression', '0');
+
 while (ob_get_level() > 0) {
     ob_end_flush();
 }
 ob_implicit_flush(true);
-echo ": stream-open\n\n";
+
+sse_emit_comment('stream-open');
+// Wypycha pierwszy większy chunk przez bufory hostingu/proxy.
+sse_emit_comment(str_repeat('pad', 12000));
 flush();
 
 $apiKey = trim((string)($settings['openai_api_key'] ?? ''));
 if ($apiKey === '') {
-    echo "event: error\n";
-    echo 'data: ' . json_encode(['message' => 'Brak OPENAI API key w ustawieniach admina.']) . "\n\n";
+    sse_emit('error', ['message' => 'Brak OPENAI API key w ustawieniach admina.']);
     flush();
     exit;
 }
@@ -186,7 +208,11 @@ ASSISTANT_MESSAGE:
         ],
     ];
 
-    $ch = curl_init($apiBase . '/responses');
+    
+$streamPending = '';
+$streamLastFlush = microtime(true);
+$streamLastPing = microtime(true);
+$ch = curl_init($apiBase . '/responses');
     curl_setopt_array($ch, [
         CURLOPT_POST => true,
         CURLOPT_HTTPHEADER => [
@@ -284,7 +310,11 @@ ASSISTANT_MESSAGE:
         ],
     ];
 
-    $ch = curl_init($apiBase . '/responses');
+    
+$streamPending = '';
+$streamLastFlush = microtime(true);
+$streamLastPing = microtime(true);
+$ch = curl_init($apiBase . '/responses');
     curl_setopt_array($ch, [
         CURLOPT_POST => true,
         CURLOPT_HTTPHEADER => [
@@ -598,6 +628,10 @@ $backendDebug = [
     'topic_achievement_inferred_confidence' => 0.0,
     'fact_overwrites' => [],
 ];
+
+$streamPending = '';
+$streamLastFlush = microtime(true);
+$streamLastPing = microtime(true);
 $ch = curl_init($apiBase . '/responses');
 curl_setopt_array($ch, [
     CURLOPT_POST => true,
@@ -606,9 +640,17 @@ curl_setopt_array($ch, [
         'Authorization: Bearer ' . $apiKey,
     ],
     CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
-    CURLOPT_WRITEFUNCTION => static function ($ch, $data) use (&$buffer, &$assistantRaw, &$hasStreamDelta) {
+    CURLOPT_WRITEFUNCTION => static function ($ch, $data) use (&$buffer, &$assistantRaw, &$hasStreamDelta, &$streamPending, &$streamLastFlush, &$streamLastPing) {
         $buffer .= str_replace("\r\n", "\n", $data);
         $events = parse_openai_sse_events($buffer);
+        $nowTs = microtime(true);
+
+        // Ping utrzymujący strumień żywy.
+        if (($nowTs - $streamLastPing) >= 1.2) {
+            sse_emit_comment('ping');
+            $streamLastPing = $nowTs;
+            flush();
+        }
 
         foreach ($events as $rawEvent) {
             $json = trim((string)($rawEvent['data'] ?? ''));
@@ -631,16 +673,23 @@ curl_setopt_array($ch, [
                 $hasStreamDelta = true;
             }
             if ($type === 'response.output_text.done' && $hasStreamDelta) {
-                // unikaj duplikatu full-text na końcu, jeśli wcześniej były delty
                 continue;
             }
 
             $assistantRaw .= $delta;
-            echo 'event: token' . "\n";
-            echo 'data: ' . json_encode(['token' => $delta], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n\n";
-            flush();
+            $streamPending .= $delta;
+
+            $chunkReady = mb_strlen($streamPending) >= 120;
+            $timeReady = ($nowTs - $streamLastFlush) >= 0.10;
+            if ($chunkReady || $timeReady) {
+                sse_emit('token', ['token' => $streamPending]);
+                $streamPending = '';
+                $streamLastFlush = $nowTs;
+                flush();
+            }
         }
 
+        return strlen($data);
     },
     CURLOPT_TIMEOUT => 120,
     CURLOPT_RETURNTRANSFER => false,
@@ -655,15 +704,19 @@ $curlErr = curl_error($ch);
 $status = curl_getinfo($ch, CURLINFO_HTTP_CODE);
 curl_close($ch);
 
+if ($streamPending !== '') {
+    sse_emit('token', ['token' => $streamPending]);
+    $streamPending = '';
+    flush();
+}
+
 if ($curlErr) {
-    echo "event: error\n";
-    echo 'data: ' . json_encode(['message' => 'Błąd połączenia z OpenAI: ' . $curlErr]) . "\n\n";
+    sse_emit('error', ['message' => 'Błąd połączenia z OpenAI: ' . $curlErr]);
     flush();
     exit;
 }
 if ($status >= 400) {
-    echo "event: error\n";
-    echo 'data: ' . json_encode(['message' => 'OpenAI HTTP ' . $status]) . "\n\n";
+    sse_emit('error', ['message' => 'OpenAI HTTP ' . $status]);
     flush();
     exit;
 }
@@ -902,14 +955,13 @@ append_chatlog($userId, [
 
 $ui = ui_payload($topics, $state, $prompt['prompt_debug_text'], $settings, $userId);
 
-echo "event: done\n";
 $pendingTransition = $state['pending_transition_announcement'] ?? null;
 if ($pendingTransition !== null) {
     $state['pending_transition_announcement'] = null;
     atomic_write($userPath, json_encode($state, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT));
 }
 
-echo 'data: ' . json_encode([
+sse_emit('done', [
     'assistant_text' => $assistantText,
     'control_json' => $control,
     'sidebar' => $ui['sidebar'],
@@ -919,5 +971,5 @@ echo 'data: ' . json_encode([
     'summarizer_prompt_used' => $summarizerPrompt !== '',
     'backend_debug' => $backendDebug,
     'pending_transition_announcement' => $pendingTransition,
-], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n\n";
+]);
 flush();
