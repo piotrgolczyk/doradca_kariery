@@ -61,8 +61,49 @@ $payload = [
     ],
 ];
 
+
+
+function extract_assistant_and_control(string $assistantRaw): array
+{
+    $control = [
+        'next_active_topic_id' => null,
+        'active_topic_action' => 'continue',
+        'events' => [],
+        'notes_to_add' => [],
+    ];
+
+    $assistantText = trim($assistantRaw);
+    if (!str_contains($assistantRaw, '<<<CONTROL_JSON>>>')) {
+        return [$assistantText, $control];
+    }
+
+    [$assistantPart, $controlPart] = explode('<<<CONTROL_JSON>>>', $assistantRaw, 2);
+    $assistantText = trim(str_replace('[ASSISTANT_TEXT]', '', $assistantPart));
+
+    $controlJsonRaw = trim($controlPart);
+    $firstBrace = strpos($controlJsonRaw, '{');
+    $lastBrace = strrpos($controlJsonRaw, '}');
+    if ($firstBrace !== false && $lastBrace !== false && $lastBrace >= $firstBrace) {
+        $controlJsonRaw = substr($controlJsonRaw, $firstBrace, $lastBrace - $firstBrace + 1);
+    }
+
+    $parsed = json_decode($controlJsonRaw, true);
+    if (is_array($parsed)) {
+        $control = array_replace($control, $parsed);
+    }
+
+    // Fallback: jeżeli model zwrócił marker i JSON, ale bez treści assistant, nie wymazuj całej odpowiedzi.
+    if ($assistantText === '') {
+        $assistantText = trim(preg_replace('/<<<CONTROL_JSON>>>.*$/s', '', $assistantRaw) ?? '');
+        $assistantText = trim(str_replace('[ASSISTANT_TEXT]', '', $assistantText));
+    }
+
+    return [$assistantText, $control];
+}
+
 $assistantRaw = '';
 $buffer = '';
+$hasStreamDelta = false;
 $ch = curl_init($apiBase . '/responses');
 curl_setopt_array($ch, [
     CURLOPT_POST => true,
@@ -71,7 +112,7 @@ curl_setopt_array($ch, [
         'Authorization: Bearer ' . $apiKey,
     ],
     CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
-    CURLOPT_WRITEFUNCTION => static function ($ch, $data) use (&$buffer, &$assistantRaw) {
+    CURLOPT_WRITEFUNCTION => static function ($ch, $data) use (&$buffer, &$assistantRaw, &$hasStreamDelta) {
         $buffer .= $data;
         while (($pos = strpos($buffer, "\n")) !== false) {
             $line = trim(substr($buffer, 0, $pos));
@@ -91,7 +132,11 @@ curl_setopt_array($ch, [
             $delta = '';
             if ($type === 'response.output_text.delta') {
                 $delta = (string)($evt['delta'] ?? '');
-            } elseif ($type === 'response.output_text.done') {
+                if ($delta !== '') {
+                    $hasStreamDelta = true;
+                }
+            } elseif ($type === 'response.output_text.done' && !$hasStreamDelta) {
+                // Fallback tylko gdy upstream nie wysłał delta.
                 $delta = (string)($evt['text'] ?? '');
             }
             if ($delta !== '') {
@@ -124,21 +169,9 @@ if ($status >= 400) {
     exit;
 }
 
-$assistantText = trim($assistantRaw);
-$control = [
-    'next_active_topic_id' => null,
-    'active_topic_action' => 'continue',
-    'events' => [],
-    'notes_to_add' => [],
-];
-if (str_contains($assistantRaw, '<<<CONTROL_JSON>>>')) {
-    [$assistantTextPart, $controlPart] = explode('<<<CONTROL_JSON>>>', $assistantRaw, 2);
-    $assistantText = trim($assistantTextPart);
-    $parsed = json_decode(trim($controlPart), true);
-    if (is_array($parsed)) {
-        $control = array_replace($control, $parsed);
-    }
-}
+$assistantText = '';
+$control = [];
+[$assistantText, $control] = extract_assistant_and_control($assistantRaw);
 
 $now = time();
 $convPairs = (int)($settings['conversation_window_pairs'] ?? 5);
