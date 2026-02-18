@@ -99,7 +99,10 @@ async function runDiagnostics() {
 
   try {
     const getRes = await fetch('api/chat.php');
-    details.push(`chat.php GET => HTTP ${getRes.status} (${getRes.status === 405 ? 'endpoint osiągalny' : (getRes.status === 404 ? 'brak endpointu' : 'inny status')})`);
+    const reachability = getRes.status === 405 || getRes.status === 200
+      ? 'endpoint osiągalny'
+      : (getRes.status === 404 ? 'brak endpointu' : 'inny status');
+    details.push(`chat.php GET => HTTP ${getRes.status} (${reachability})`);
   } catch (e) {
     details.push(`chat.php GET fetch error: ${e.message}`);
   }

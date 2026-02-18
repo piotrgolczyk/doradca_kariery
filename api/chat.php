@@ -3,6 +3,16 @@
 declare(strict_types=1);
 require_once __DIR__ . '/bootstrap.php';
 
+if ($_SERVER['REQUEST_METHOD'] === 'GET') {
+    json_response([
+        'ok' => true,
+        'endpoint' => 'chat',
+        'reachable' => true,
+        'allowed_method' => 'POST',
+        'note' => 'Endpoint służy do streamingu SSE i wymaga metody POST.'
+    ], 200);
+}
+
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     json_response(['error' => 'Method not allowed'], 405);
 }
