@@ -125,6 +125,106 @@ function request_repair_assistant_text(string $apiBase, string $apiKey, string $
     return null;
 }
 
+
+function run_topic_summarizer(
+    string $apiBase,
+    string $apiKey,
+    string $model,
+    string $effort,
+    string $summarizerPrompt,
+    array $topic,
+    string $userMessage,
+    string $assistantText
+): ?array {
+    if (trim($summarizerPrompt) === '' || trim($apiKey) === '') {
+        return null;
+    }
+
+    $topicTitle = (string)($topic['title'] ?? $topic['topic_id'] ?? 'temat');
+    $topicGoal = (string)($topic['goal'] ?? '');
+    $payload = [
+        'model' => $model,
+        'reasoning' => ['effort' => $effort],
+        'stream' => false,
+        'input' => [
+            ['role' => 'system', 'content' => [['type' => 'input_text', 'text' => $summarizerPrompt]]],
+            ['role' => 'user', 'content' => [[
+                'type' => 'input_text',
+                'text' => "TOPIC_ID: " . (string)($topic['topic_id'] ?? '') . "
+TOPIC_TITLE: {$topicTitle}
+TOPIC_GOAL: {$topicGoal}
+
+USER_MESSAGE:
+{$userMessage}
+
+ASSISTANT_MESSAGE:
+{$assistantText}",
+            ]]],
+        ],
+    ];
+
+    $ch = curl_init($apiBase . '/responses');
+    curl_setopt_array($ch, [
+        CURLOPT_POST => true,
+        CURLOPT_HTTPHEADER => [
+            'Content-Type: application/json',
+            'Authorization: Bearer ' . $apiKey,
+        ],
+        CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 60,
+    ]);
+
+    $raw = curl_exec($ch);
+    $err = curl_error($ch);
+    $status = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+
+    if ($err || !is_string($raw) || $status >= 400) {
+        return null;
+    }
+
+    $parsed = json_decode($raw, true);
+    if (!is_array($parsed)) {
+        return null;
+    }
+
+    $text = trim((string)($parsed['output_text'] ?? ''));
+    if ($text === '') {
+        foreach (($parsed['output'] ?? []) as $item) {
+            foreach (($item['content'] ?? []) as $content) {
+                $candidate = trim((string)($content['text'] ?? ''));
+                if ($candidate !== '') {
+                    $text = $candidate;
+                    break 2;
+                }
+            }
+        }
+    }
+
+    if ($text === '') {
+        return null;
+    }
+
+    $start = strpos($text, '{');
+    $end = strrpos($text, '}');
+    if ($start !== false && $end !== false && $end >= $start) {
+        $text = substr($text, $start, $end - $start + 1);
+    }
+
+    $json = json_decode($text, true);
+    if (!is_array($json)) {
+        return null;
+    }
+
+    $oneLiner = mb_substr(trim((string)($json['one_liner'] ?? '')), 0, 140);
+    $factValue = isset($json['fact_value']) ? trim((string)$json['fact_value']) : '';
+    return [
+        'one_liner' => $oneLiner,
+        'fact_value' => $factValue,
+    ];
+}
+
 function extract_assistant_and_control(string $assistantRaw): array
 {
     $control = [
@@ -183,6 +283,7 @@ $backendDebug = [
     'assistant_text_len' => 0,
     'repair_attempted' => false,
     'repair_success' => false,
+    'summarized_topics' => [],
 ];
 $ch = curl_init($apiBase . '/responses');
 curl_setopt_array($ch, [
@@ -294,13 +395,36 @@ foreach (($control['events'] ?? []) as $event) {
         ];
         $topicRef = find_topic($topics, $tid);
         if ($topicRef) {
+            $summary = run_topic_summarizer(
+                $apiBase,
+                $apiKey,
+                $model,
+                $effort,
+                $summarizerPrompt,
+                $topicRef['topic'],
+                $userMessage,
+                $assistantText
+            );
+
             $oneLiner = mb_substr('Domknięto temat: ' . ($topicRef['topic']['title'] ?? $tid), 0, 140);
+            if (is_array($summary) && trim((string)($summary['one_liner'] ?? '')) !== '') {
+                $oneLiner = (string)$summary['one_liner'];
+            }
+            $backendDebug['summarized_topics'][] = [
+                'topic_id' => $tid,
+                'summary_ok' => is_array($summary),
+                'one_liner_len' => mb_strlen($oneLiner),
+            ];
+
             if (!empty($topicRef['topic']['record_on_close'])) {
                 $state['closed_topics_log'][] = ['topic_id' => $tid, 'created_at' => $now, 'text' => $oneLiner];
             }
             if (!empty($topicRef['topic']['fact_key'])) {
                 $factKey = (string)$topicRef['topic']['fact_key'];
-                $value = mb_substr($assistantText, 0, 120);
+                $value = trim((string)($summary['fact_value'] ?? ''));
+                if ($value === '' || strtolower($value) === 'null') {
+                    $value = mb_substr($assistantText, 0, 120);
+                }
                 $existingIndex = null;
                 foreach (($state['profile_facts'] ?? []) as $idx => $fact) {
                     if (($fact['fact_key'] ?? '') === $factKey) {
