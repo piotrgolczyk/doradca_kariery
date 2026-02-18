@@ -321,6 +321,7 @@ async function sendMessage(text) {
             assistantLen: (payload.assistant_text || '').length,
             tokenCount,
             hasControlJson: !!payload.control_json,
+            backendDebug: payload.backend_debug || null,
           });
           setApiStatus(true);
         } else if (event === 'error') {

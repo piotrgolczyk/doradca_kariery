@@ -63,6 +63,68 @@ $payload = [
 
 
 
+
+function request_repair_assistant_text(string $apiBase, string $apiKey, string $model, string $effort, string $systemPrompt, string $turnContext): ?string
+{
+    $repairPayload = [
+        'model' => $model,
+        'reasoning' => ['effort' => $effort],
+        'stream' => false,
+        'input' => [
+            ['role' => 'system', 'content' => [['type' => 'input_text', 'text' => $systemPrompt]]],
+            ['role' => 'user', 'content' => [[
+                'type' => 'input_text',
+                'text' => "W poprzedniej odpowiedzi zabrakło treści [ASSISTANT_TEXT]. Wygeneruj wyłącznie brakującą naturalną odpowiedź asystenta (1-3 zdania, bez CONTROL_JSON), bazując na tym kontekście:
+
+" . $turnContext,
+            ]]],
+        ],
+    ];
+
+    $chRepair = curl_init($apiBase . '/responses');
+    curl_setopt_array($chRepair, [
+        CURLOPT_POST => true,
+        CURLOPT_HTTPHEADER => [
+            'Content-Type: application/json',
+            'Authorization: Bearer ' . $apiKey,
+        ],
+        CURLOPT_POSTFIELDS => json_encode($repairPayload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 60,
+    ]);
+
+    $raw = curl_exec($chRepair);
+    $err = curl_error($chRepair);
+    $status = curl_getinfo($chRepair, CURLINFO_HTTP_CODE);
+    curl_close($chRepair);
+
+    if ($err || !is_string($raw) || $status >= 400) {
+        return null;
+    }
+
+    $parsed = json_decode($raw, true);
+    if (!is_array($parsed)) {
+        return null;
+    }
+
+    $text = trim((string)($parsed['output_text'] ?? ''));
+    if ($text !== '') {
+        return $text;
+    }
+
+    // Fallback dla struktur output/content.
+    foreach (($parsed['output'] ?? []) as $item) {
+        foreach (($item['content'] ?? []) as $content) {
+            $candidate = trim((string)($content['text'] ?? ''));
+            if ($candidate !== '') {
+                return $candidate;
+            }
+        }
+    }
+
+    return null;
+}
+
 function extract_assistant_and_control(string $assistantRaw): array
 {
     $control = [
@@ -115,6 +177,13 @@ function fallback_assistant_text(array $topics, array $state): string
 $assistantRaw = '';
 $buffer = '';
 $hasStreamDelta = false;
+$backendDebug = [
+    'had_control_marker' => false,
+    'assistant_raw_len' => 0,
+    'assistant_text_len' => 0,
+    'repair_attempted' => false,
+    'repair_success' => false,
+];
 $ch = curl_init($apiBase . '/responses');
 curl_setopt_array($ch, [
     CURLOPT_POST => true,
@@ -183,9 +252,23 @@ if ($status >= 400) {
 $assistantText = '';
 $control = [];
 [$assistantText, $control] = extract_assistant_and_control($assistantRaw);
+$backendDebug['had_control_marker'] = str_contains($assistantRaw, '<<<CONTROL_JSON>>>');
+$backendDebug['assistant_raw_len'] = mb_strlen($assistantRaw);
+$backendDebug['assistant_text_len'] = mb_strlen($assistantText);
+
+if ($assistantText === '' && $apiKey !== '') {
+    $backendDebug['repair_attempted'] = true;
+    $repair = request_repair_assistant_text($apiBase, $apiKey, $model, $effort, $prompt['system_prompt'], $prompt['turn_context']);
+    if (is_string($repair) && trim($repair) !== '') {
+        $assistantText = trim($repair);
+        $backendDebug['repair_success'] = true;
+    }
+}
+
 if ($assistantText === '') {
     $assistantText = fallback_assistant_text($topics, $state);
 }
+$backendDebug['assistant_text_len'] = mb_strlen($assistantText);
 
 $now = time();
 $convPairs = (int)($settings['conversation_window_pairs'] ?? 5);
@@ -309,5 +392,6 @@ echo 'data: ' . json_encode([
     'prompt_debug_text' => $ui['prompt_debug_text'],
     'chatlog_tail' => $ui['chatlog_tail'],
     'summarizer_prompt_used' => $summarizerPrompt !== '',
+    'backend_debug' => $backendDebug,
 ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n\n";
 flush();
