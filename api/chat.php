@@ -126,6 +126,115 @@ function request_repair_assistant_text(string $apiBase, string $apiKey, string $
 }
 
 
+
+function detect_topic_achievement_with_llm(
+    string $apiBase,
+    string $apiKey,
+    string $model,
+    string $effort,
+    array $activeTopic,
+    string $userMessage,
+    string $assistantText
+): ?array {
+    if (trim($apiKey) === '') {
+        return null;
+    }
+
+    $topicId = (string)($activeTopic['topic_id'] ?? '');
+    if ($topicId === '') {
+        return null;
+    }
+
+    $title = (string)($activeTopic['title'] ?? $topicId);
+    $goal = (string)($activeTopic['goal'] ?? '');
+    $micro = (string)($activeTopic['micro_prompt'] ?? '');
+
+    $judgePrompt = "Jesteś walidatorem domknięcia tematu rozmowy. Zwróć WYŁĄCZNIE JSON: {\"achieved\": true|false, \"confidence\": 0..1}.\n"
+        . "Uznaj achieved=true tylko gdy odpowiedź użytkownika rzeczywiście spełnia cel aktywnego tematu.\n"
+        . "Brak dodatkowego tekstu poza JSON.";
+
+    $judgeInput = "TOPIC_ID: {$topicId}
+TOPIC_TITLE: {$title}
+TOPIC_GOAL: {$goal}
+TOPIC_MICRO_PROMPT: {$micro}
+
+USER_MESSAGE:
+{$userMessage}
+
+ASSISTANT_MESSAGE:
+{$assistantText}";
+
+    $payload = [
+        'model' => $model,
+        'reasoning' => ['effort' => $effort],
+        'stream' => false,
+        'input' => [
+            ['role' => 'system', 'content' => [['type' => 'input_text', 'text' => $judgePrompt]]],
+            ['role' => 'user', 'content' => [['type' => 'input_text', 'text' => $judgeInput]]],
+        ],
+    ];
+
+    $ch = curl_init($apiBase . '/responses');
+    curl_setopt_array($ch, [
+        CURLOPT_POST => true,
+        CURLOPT_HTTPHEADER => [
+            'Content-Type: application/json',
+            'Authorization: Bearer ' . $apiKey,
+        ],
+        CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 40,
+    ]);
+
+    $raw = curl_exec($ch);
+    $err = curl_error($ch);
+    $status = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+
+    if ($err || !is_string($raw) || $status >= 400) {
+        return null;
+    }
+
+    $parsed = json_decode($raw, true);
+    if (!is_array($parsed)) {
+        return null;
+    }
+
+    $text = trim((string)($parsed['output_text'] ?? ''));
+    if ($text === '') {
+        foreach (($parsed['output'] ?? []) as $item) {
+            foreach (($item['content'] ?? []) as $content) {
+                $candidate = trim((string)($content['text'] ?? ''));
+                if ($candidate !== '') {
+                    $text = $candidate;
+                    break 2;
+                }
+            }
+        }
+    }
+    if ($text === '') {
+        return null;
+    }
+
+    $start = strpos($text, '{');
+    $end = strrpos($text, '}');
+    if ($start !== false && $end !== false && $end >= $start) {
+        $text = substr($text, $start, $end - $start + 1);
+    }
+
+    $json = json_decode($text, true);
+    if (!is_array($json)) {
+        return null;
+    }
+
+    $achieved = (bool)($json['achieved'] ?? false);
+    $confidence = (float)($json['confidence'] ?? 0.0);
+    return [
+        'achieved' => $achieved,
+        'confidence' => max(0.0, min(1.0, $confidence)),
+    ];
+}
+
 function run_topic_summarizer(
     string $apiBase,
     string $apiKey,
@@ -284,6 +393,8 @@ $backendDebug = [
     'repair_attempted' => false,
     'repair_success' => false,
     'summarized_topics' => [],
+    'topic_achievement_inferred' => false,
+    'topic_achievement_inferred_confidence' => 0.0,
 ];
 $ch = curl_init($apiBase . '/responses');
 curl_setopt_array($ch, [
@@ -381,6 +492,37 @@ $activeTopicId = (string)($state['active_topic']['topic_id'] ?? '');
 if ($activeTopicId !== '') {
     $state['topic_state'][$activeTopicId]['status'] = $state['topic_state'][$activeTopicId]['status'] ?? 'in_progress';
     $state['topic_state'][$activeTopicId]['attempts'] = (int)($state['topic_state'][$activeTopicId]['attempts'] ?? 0) + 1;
+}
+
+
+$activeTopicRef = $activeTopicId !== '' ? find_topic($topics, $activeTopicId) : null;
+$hasAchievedEvent = false;
+foreach (($control['events'] ?? []) as $evt) {
+    if (($evt['type'] ?? '') === 'topic_achieved') {
+        $hasAchievedEvent = true;
+        break;
+    }
+}
+
+if (!$hasAchievedEvent && $activeTopicRef && (($activeTopicRef['topic']['type'] ?? '') === 'question_goal')) {
+    $detected = detect_topic_achievement_with_llm(
+        $apiBase,
+        $apiKey,
+        $model,
+        $effort,
+        $activeTopicRef['topic'],
+        $userMessage,
+        $assistantText
+    );
+    if (is_array($detected) && !empty($detected['achieved'])) {
+        $control['events'][] = [
+            'type' => 'topic_achieved',
+            'topic_id' => (string)$activeTopicRef['topic']['topic_id'],
+            'confidence' => (float)($detected['confidence'] ?? 0.7),
+        ];
+        $backendDebug['topic_achievement_inferred'] = true;
+        $backendDebug['topic_achievement_inferred_confidence'] = (float)($detected['confidence'] ?? 0.7);
+    }
 }
 
 $summarizerPrompt = trim((string)file_get_contents(DATA_DIR . '/prompt_summarizer.txt'));
