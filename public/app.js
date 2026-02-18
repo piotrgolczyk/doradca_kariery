@@ -298,28 +298,41 @@ async function sendMessage(text) {
   let tokenCount = 0;
   let doneReceived = false;
 
+  const parseSseEvents = (buffer) => {
+    const normalized = buffer.replace(/\r\n/g, '\n');
+    const blocks = normalized.split('\n\n');
+    return { events: blocks.slice(0, -1), rest: blocks[blocks.length - 1] || '' };
+  };
+
+  const parseSseBlock = (block) => {
+    const lines = block.split('\n');
+    const event = lines.find((l) => l.startsWith('event:'))?.replace('event:', '').trim() || 'message';
+    const dataLines = lines
+      .filter((l) => l.startsWith('data:'))
+      .map((l) => l.replace(/^data:\\s*/, ''));
+    return { event, data: dataLines.join('\n') };
+  };
+
   try {
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
       sseBuffer += decoder.decode(value, { stream: true });
-      const chunks = sseBuffer.split('\n\n');
-      sseBuffer = chunks.pop();
+      const parsed = parseSseEvents(sseBuffer);
+      sseBuffer = parsed.rest;
 
-      for (const chunk of chunks) {
-        const lines = chunk.split('\n');
-        const event = lines.find((l) => l.startsWith('event:'))?.replace('event:', '').trim() || 'message';
-        const dataLine = lines.find((l) => l.startsWith('data:'));
-        if (!dataLine) {
-          addDiag(`chat#${runId} sse`, 'warn', { event, issue: 'missing data line', chunk: chunk.slice(0, 120) });
+      for (const block of parsed.events) {
+        const { event, data } = parseSseBlock(block);
+        if (!data) {
+          addDiag(`chat#${runId} sse`, 'warn', { event, issue: 'missing data line', chunk: block.slice(0, 120) });
           continue;
         }
 
         let payload;
         try {
-          payload = JSON.parse(dataLine.replace(/^data:\s*/, ''));
+          payload = JSON.parse(data);
         } catch (e) {
-          addDiag(`chat#${runId} sse`, 'error', { event, issue: 'invalid JSON', parseError: e.message, raw: dataLine.slice(0, 180) });
+          addDiag(`chat#${runId} sse`, 'error', { event, issue: 'invalid JSON', parseError: e.message, raw: data.slice(0, 180) });
           continue;
         }
 

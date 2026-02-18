@@ -41,6 +41,8 @@ header('Connection: keep-alive');
 header('X-Accel-Buffering: no');
 while (ob_get_level() > 0) { ob_end_flush(); }
 ob_implicit_flush(true);
+echo ": stream-open\n\n";
+flush();
 
 $apiKey = trim((string)($settings['openai_api_key'] ?? ''));
 if ($apiKey === '') {
@@ -416,6 +418,98 @@ function maybe_advance_group(array $topics, array &$state, int $now): ?array
     return $state['pending_transition_announcement'];
 }
 
+
+function guess_topic_id_from_text(array $topics, array $state, string $text): ?string
+{
+    $normalized = mb_strtolower($text);
+    if (trim($normalized) === '') {
+        return null;
+    }
+
+    $closedIds = array_map(static fn($e) => (string)($e['topic_id'] ?? ''), $state['closed_topics_log'] ?? []);
+    $closedLookup = array_values(array_filter(array_unique($closedIds), static fn($id) => $id !== ''));
+
+    $candidates = [];
+    foreach (flatten_topics($topics) as $topic) {
+        $tid = (string)($topic['topic_id'] ?? '');
+        if ($tid === '') {
+            continue;
+        }
+        if (!in_array($tid, $closedLookup, true)) {
+            continue;
+        }
+        $title = mb_strtolower((string)($topic['title'] ?? ''));
+        if ($title !== '' && str_contains($normalized, $title)) {
+            return $tid;
+        }
+        $candidates[] = ['id' => $tid, 'title' => $title];
+    }
+
+    foreach ($candidates as $c) {
+        if ($c['title'] === '') {
+            continue;
+        }
+        foreach (preg_split('/\s+/', $c['title']) as $word) {
+            $word = trim($word);
+            if (mb_strlen($word) >= 4 && str_contains($normalized, $word)) {
+                return $c['id'];
+            }
+        }
+    }
+
+    return null;
+}
+
+function parse_openai_sse_events(string &$buffer): array
+{
+    $events = [];
+    while (($sep = strpos($buffer, "\n\n")) !== false) {
+        $raw = substr($buffer, 0, $sep);
+        $buffer = substr($buffer, $sep + 2);
+
+        $eventType = 'message';
+        $dataLines = [];
+        foreach (preg_split('/\r?\n/', trim($raw)) as $line) {
+            if ($line === '') {
+                continue;
+            }
+            if (str_starts_with($line, 'event:')) {
+                $eventType = trim(substr($line, 6));
+                continue;
+            }
+            if (str_starts_with($line, 'data:')) {
+                $dataLines[] = trim(substr($line, 5));
+            }
+        }
+        if (!empty($dataLines)) {
+            $events[] = ['event' => $eventType, 'data' => implode("
+", $dataLines)];
+        }
+    }
+    return $events;
+}
+
+function extract_delta_from_openai_event(array $evt): string
+{
+    $type = (string)($evt['type'] ?? '');
+    if ($type === 'response.output_text.delta') {
+        return (string)($evt['delta'] ?? '');
+    }
+
+    if ($type === 'response.content_part.added') {
+        $part = $evt['part'] ?? null;
+        if (is_array($part) && (($part['type'] ?? '') === 'output_text')) {
+            return (string)($part['text'] ?? '');
+        }
+    }
+
+    if ($type === 'response.output_text.done') {
+        return (string)($evt['text'] ?? '');
+    }
+
+    return '';
+}
+
 function extract_assistant_and_control(string $assistantRaw): array
 {
     $control = [
@@ -477,6 +571,7 @@ $backendDebug = [
     'summarized_topics' => [],
     'topic_achievement_inferred' => false,
     'topic_achievement_inferred_confidence' => 0.0,
+    'fact_overwrites' => [],
 ];
 $ch = curl_init($apiBase . '/responses');
 curl_setopt_array($ch, [
@@ -487,42 +582,49 @@ curl_setopt_array($ch, [
     ],
     CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
     CURLOPT_WRITEFUNCTION => static function ($ch, $data) use (&$buffer, &$assistantRaw, &$hasStreamDelta) {
-        $buffer .= $data;
-        while (($pos = strpos($buffer, "\n")) !== false) {
-            $line = trim(substr($buffer, 0, $pos));
-            $buffer = substr($buffer, $pos + 1);
-            if ($line === '' || !str_starts_with($line, 'data:')) {
+        $buffer .= str_replace("
+", "
+", $data);
+        $events = parse_openai_sse_events($buffer);
+
+        foreach ($events as $rawEvent) {
+            $json = trim((string)($rawEvent['data'] ?? ''));
+            if ($json === '' || $json === '[DONE]') {
                 continue;
             }
-            $json = trim(substr($line, 5));
-            if ($json === '[DONE]') {
-                return strlen($data);
-            }
+
             $evt = json_decode($json, true);
             if (!is_array($evt)) {
                 continue;
             }
+
+            $delta = extract_delta_from_openai_event($evt);
+            if ($delta === '') {
+                continue;
+            }
+
             $type = (string)($evt['type'] ?? '');
-            $delta = '';
-            if ($type === 'response.output_text.delta') {
-                $delta = (string)($evt['delta'] ?? '');
-                if ($delta !== '') {
-                    $hasStreamDelta = true;
-                }
-            } elseif ($type === 'response.output_text.done' && !$hasStreamDelta) {
-                // Fallback tylko gdy upstream nie wysłał delta.
-                $delta = (string)($evt['text'] ?? '');
+            if ($type === 'response.output_text.delta' || $type === 'response.content_part.added') {
+                $hasStreamDelta = true;
             }
-            if ($delta !== '') {
-                $assistantRaw .= $delta;
-                echo 'data: ' . json_encode(['token' => $delta], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n\n";
-                flush();
+            if ($type === 'response.output_text.done' && $hasStreamDelta) {
+                // unikaj duplikatu full-text na końcu, jeśli wcześniej były delty
+                continue;
             }
+
+            $assistantRaw .= $delta;
+            echo 'event: token' . "\n";
+            echo 'data: ' . json_encode(['token' => $delta], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n\n";
+            flush();
         }
+
         return strlen($data);
     },
     CURLOPT_TIMEOUT => 120,
     CURLOPT_RETURNTRANSFER => false,
+    CURLOPT_BUFFERSIZE => 1024,
+    CURLOPT_TCP_NODELAY => 1,
+    CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
 ]);
 
 curl_exec($ch);
@@ -647,7 +749,7 @@ foreach (($control['events'] ?? []) as $event) {
                 $factKey = (string)$topicRef['topic']['fact_key'];
                 $value = trim((string)($summary['fact_value'] ?? ''));
                 if ($value === '' || strtolower($value) === 'null') {
-                    $value = mb_substr($assistantText, 0, 120);
+                    $value = mb_substr($userMessage, 0, 160);
                 }
                 $existingIndex = null;
                 foreach (($state['profile_facts'] ?? []) as $idx => $fact) {
@@ -667,16 +769,20 @@ foreach (($control['events'] ?? []) as $event) {
                     $state['profile_facts'][] = $newFact;
                 } else {
                     $oldValue = (string)($state['profile_facts'][$existingIndex]['value'] ?? '');
-                    if ($oldValue !== $value && !empty($topicRef['topic']['confirmation_required_on_change'])) {
-                        $state['active_topic']['mode'] = 'confirmation_pending';
-                        $state['active_topic']['pending_confirmation'] = [
+                    $state['profile_facts'][$existingIndex] = $newFact;
+
+                    if ($oldValue !== '' && $oldValue !== $value) {
+                        $state['closed_topics_log'][] = [
+                            'topic_id' => $tid,
+                            'created_at' => $now,
+                            'text' => mb_substr('Korekta ustaleń: ' . $factKey . ' = ' . $value . ' (wcześniej: ' . $oldValue . ')', 0, 140),
+                        ];
+                        $backendDebug['fact_overwrites'][] = [
                             'fact_key' => $factKey,
                             'old_value' => $oldValue,
                             'new_value' => $value,
-                            'question' => 'Widzę inną wartość niż wcześniej. Czy chcesz zaktualizować tę informację?',
+                            'source_topic_id' => $tid,
                         ];
-                    } else {
-                        $state['profile_facts'][$existingIndex] = $newFact;
                     }
                 }
             }
@@ -697,9 +803,12 @@ foreach (($control['events'] ?? []) as $event) {
 
 $revisitTopicId = '';
 foreach (($control['events'] ?? []) as $event) {
-    if (($event['type'] ?? '') === 'user_requested_past_topic' && !empty($event['topic_id'])) {
-        $candidate = (string)$event['topic_id'];
-        if (find_topic($topics, $candidate)) {
+    if (($event['type'] ?? '') === 'user_requested_past_topic') {
+        $candidate = trim((string)($event['topic_id'] ?? ''));
+        if ($candidate === '') {
+            $candidate = (string)(guess_topic_id_from_text($topics, $state, $userMessage) ?? '');
+        }
+        if ($candidate !== '' && find_topic($topics, $candidate)) {
             $revisitTopicId = $candidate;
             break;
         }
