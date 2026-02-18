@@ -153,7 +153,7 @@ async function runDiagnostics() {
     const initRes = await fetch('api/init.php', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ hard_id: state.hardId, fingerprint: state.fingerprint }),
+      body: JSON.stringify({ hard_id: `${state.hardId}-probe`, fingerprint: `${state.fingerprint}-probe`, probe: true }),
     });
     const txt = await initRes.text();
     addDiag('init.php (probe)', initRes.ok ? 'ok' : 'error', {

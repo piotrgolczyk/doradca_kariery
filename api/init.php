@@ -25,6 +25,7 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 $input = json_decode(file_get_contents('php://input') ?: '{}', true);
 $hardId = trim((string)($input['hard_id'] ?? ''));
 $fingerprint = trim((string)($input['fingerprint'] ?? ''));
+$probe = (bool)($input['probe'] ?? false);
 
 if ($hardId === '' && $fingerprint === '') {
     json_response(['error' => 'Brak hard_id/fingerprint'], 422);
@@ -101,7 +102,7 @@ $activeTopicId = (string)$state['active_topic']['topic_id'];
 $activeRef = find_topic($topics, $activeTopicId);
 $activeTopic = $activeRef['topic'] ?? $firstTopic;
 
-if ($isNew && !empty($settings['greeting_first_visit_enabled'])) {
+if (!$probe && $isNew && !empty($settings['greeting_first_visit_enabled'])) {
     $question = (($activeTopic['topic_id'] ?? '') === 'imie')
         ? 'Na start: jak masz na imię?'
         : (string)($activeTopic['micro_prompt'] ?? 'Od czego chcesz zacząć?');
@@ -110,7 +111,7 @@ if ($isNew && !empty($settings['greeting_first_visit_enabled'])) {
     append_chatlog($userId, [['ts' => $now, 'role' => 'assistant', 'text' => $text]]);
     $state['first_seen_ts'] = $state['first_seen_ts'] ?? $now;
     $state['last_active_ts'] = $now;
-} elseif (!$isNew && !empty($settings['greeting_return_enabled'])) {
+} elseif (!$probe && !$isNew && !empty($settings['greeting_return_enabled'])) {
     $lastActive = (int)($state['last_active_ts'] ?? 0);
     $threshold = (int)($settings['greeting_return_threshold_seconds'] ?? 300);
     if ($lastActive > 0 && ($now - $lastActive) >= $threshold) {
@@ -140,8 +141,10 @@ if ($isNew && !empty($settings['greeting_first_visit_enabled'])) {
     }
 }
 
-$state['last_session_start_ts'] = $now;
-atomic_write($userPath, json_encode($state, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT));
+if (!$probe) {
+    $state['last_session_start_ts'] = $now;
+    atomic_write($userPath, json_encode($state, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT));
+}
 
 $prompt = build_turn_prompt($settings, $topics, $state, '[INIT]');
 $ui = ui_payload($topics, $state, $prompt['prompt_debug_text'], $settings, $userId);
@@ -156,6 +159,7 @@ json_response([
     'sidebar' => $ui['sidebar'],
     'progress' => $ui['progress'],
     'prompt_debug_text' => $ui['prompt_debug_text'],
+    'probe' => $probe,
     'settings' => [
         'show_chatlog_lines_default' => (int)($settings['show_chatlog_lines_default'] ?? 100),
         'conversation_window_pairs' => (int)($settings['conversation_window_pairs'] ?? 5),

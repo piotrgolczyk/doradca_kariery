@@ -101,6 +101,17 @@ function extract_assistant_and_control(string $assistantRaw): array
     return [$assistantText, $control];
 }
 
+
+function fallback_assistant_text(array $topics, array $state): string
+{
+    $activeTopicId = (string)($state['active_topic']['topic_id'] ?? '');
+    $activeRef = $activeTopicId !== '' ? find_topic($topics, $activeTopicId) : null;
+    $title = (string)($activeRef['topic']['title'] ?? 'kolejny krok');
+    $micro = trim((string)($activeRef['topic']['micro_prompt'] ?? ''));
+    $suffix = $micro !== '' ? (' ' . $micro) : '';
+    return "Dzięki za odpowiedź — kontynuujmy temat: {$title}.{$suffix}";
+}
+
 $assistantRaw = '';
 $buffer = '';
 $hasStreamDelta = false;
@@ -172,6 +183,9 @@ if ($status >= 400) {
 $assistantText = '';
 $control = [];
 [$assistantText, $control] = extract_assistant_and_control($assistantRaw);
+if ($assistantText === '') {
+    $assistantText = fallback_assistant_text($topics, $state);
+}
 
 $now = time();
 $convPairs = (int)($settings['conversation_window_pairs'] ?? 5);
