@@ -1,0 +1,29 @@
+body { font-family: Inter, Arial, sans-serif; margin: 0; background: #f7f7f8; color: #1f2937; }
+.layout { display: flex; min-height: 100vh; }
+.sidebar { width: 340px; background: #fff; border-right: 1px solid #e5e7eb; padding: 16px; overflow-y: auto; }
+.sidebar.hidden { display: none; }
+.chat-wrap { flex: 1; max-width: 900px; margin: 0 auto; display: flex; flex-direction: column; }
+header { display: flex; align-items: center; gap: 12px; padding: 12px; }
+.chat { flex: 1; padding: 12px; overflow-y: auto; }
+.msg { max-width: 75%; padding: 10px 12px; border-radius: 12px; margin: 8px 0; white-space: pre-wrap; }
+.msg.user { margin-left: auto; background: #2563eb; color: #fff; }
+.msg.assistant { background: #fff; border: 1px solid #e5e7eb; }
+.chat-form { display: flex; gap: 8px; padding: 12px; border-top: 1px solid #e5e7eb; background: #fff; }
+.chat-form input { flex: 1; padding: 10px; border-radius: 8px; border: 1px solid #d1d5db; }
+.prompt-box { margin-top: 12px; }
+.prompt-title { display: flex; justify-content: space-between; font-size: 12px; }
+#promptPreview { font-size: 11px; max-height: 220px; overflow: auto; background: #f3f4f6; padding: 8px; border-radius: 8px; }
+.status-dot { margin-left: auto; color: #dc2626; cursor: pointer; border: none; background: transparent; font-size: 22px; line-height: 1; }
+.status-dot.ok { color: #16a34a; }
+.admin-wrap { max-width: 900px; margin: 20px auto; background: #fff; padding: 20px; border-radius: 12px; }
+.admin-form { display: grid; gap: 10px; }
+.admin-form textarea, .admin-form input { width: 100%; }
+.success { color: #16a34a; }
+
+.diag-modal { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.55); display: flex; align-items: center; justify-content: center; padding: 24px; z-index: 99; }
+.diag-modal.hidden { display: none; }
+.diag-card { width: min(980px, 95vw); max-height: 90vh; background: #fff; border-radius: 12px; border: 1px solid #e5e7eb; display: flex; flex-direction: column; }
+.diag-header { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 12px 14px; border-bottom: 1px solid #e5e7eb; }
+.diag-header h2 { margin: 0; font-size: 16px; }
+.diag-actions { display: flex; gap: 8px; }
+.diag-content { margin: 0; padding: 14px; font-size: 12px; white-space: pre-wrap; overflow: auto; line-height: 1.45; }

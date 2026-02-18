@@ -1,0 +1,83 @@
+{
+  "stages": [
+    {
+      "stage_id": "poznanie",
+      "title": "Poznajmy Cię",
+      "groups": [
+        {
+          "group_id": "tozsamosc",
+          "title": "Tożsamość i preferencje",
+          "min_points_to_advance": 12,
+          "topics": [
+            {
+              "topic_id": "imie",
+              "title": "Imię użytkownika",
+              "weight": 12,
+              "required": true,
+              "type": "question_goal",
+              "goal": "Poznać imię użytkownika",
+              "micro_prompt": "Zapytaj jak ma na imię.",
+              "fact_key": "name",
+              "record_on_close": true,
+              "confirmation_required_on_change": true
+            },
+            {
+              "topic_id": "energia",
+              "title": "Styl pracy",
+              "weight": 5,
+              "required": false,
+              "type": "question_goal",
+              "goal": "Czy użytkownik lubi pracę z ludźmi czy samodzielnie",
+              "micro_prompt": "Zapytaj o preferowany styl pracy.",
+              "fact_key": "work_style",
+              "record_on_close": true,
+              "confirmation_required_on_change": false
+            },
+            {
+              "topic_id": "icebreaker",
+              "title": "Lekki komentarz relacyjny",
+              "weight": 1,
+              "required": false,
+              "type": "internal_comment",
+              "goal": "Zbudować relację",
+              "micro_prompt": "Dodaj krótką życzliwą wstawkę.",
+              "record_on_close": false,
+              "confirmation_required_on_change": false
+            }
+          ]
+        },
+        {
+          "group_id": "zainteresowania",
+          "title": "Zainteresowania i mocne strony",
+          "min_points_to_advance": 10,
+          "topics": [
+            {
+              "topic_id": "hobby",
+              "title": "Hobby",
+              "weight": 6,
+              "required": false,
+              "type": "question_goal",
+              "goal": "Ustalić główne zainteresowania",
+              "micro_prompt": "Zapytaj, co użytkownik lubi robić po szkole.",
+              "fact_key": "hobby",
+              "record_on_close": true,
+              "confirmation_required_on_change": false
+            },
+            {
+              "topic_id": "mocne_strony",
+              "title": "Mocne strony",
+              "weight": 6,
+              "required": false,
+              "type": "question_goal",
+              "goal": "Zidentyfikować mocne strony",
+              "micro_prompt": "Zapytaj o to, co wychodzi użytkownikowi najlepiej.",
+              "fact_key": "strengths",
+              "record_on_close": true,
+              "confirmation_required_on_change": false
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
