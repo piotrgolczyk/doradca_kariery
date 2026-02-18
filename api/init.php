@@ -3,6 +3,21 @@
 declare(strict_types=1);
 require_once __DIR__ . '/bootstrap.php';
 
+$settings = settings();
+$topics = topics_data();
+
+if ($_SERVER['REQUEST_METHOD'] === 'GET' && (string)($_GET['chatlog'] ?? '') === 'full') {
+    $userId = trim((string)($_GET['user_id'] ?? ''));
+    if ($userId === '') {
+        json_response(['error' => 'Brak user_id'], 422);
+    }
+    json_response([
+        'ok' => true,
+        'user_id' => $userId,
+        'chatlog' => read_chatlog_lines($userId),
+    ]);
+}
+
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     json_response(['error' => 'Method not allowed'], 405);
 }
@@ -10,17 +25,13 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 $input = json_decode(file_get_contents('php://input') ?: '{}', true);
 $hardId = trim((string)($input['hard_id'] ?? ''));
 $fingerprint = trim((string)($input['fingerprint'] ?? ''));
-$loadAll = (bool)($input['load_all'] ?? false);
 
 if ($hardId === '' && $fingerprint === '') {
     json_response(['error' => 'Brak hard_id/fingerprint'], 422);
 }
 
-$topics = topics_data();
-$settings = settings();
 $usersPath = DATA_DIR . '/users.json';
-
-$result = with_file_lock($usersPath, function () use ($usersPath, $hardId, $fingerprint, $topics) {
+$result = with_file_lock($usersPath, static function () use ($usersPath, $hardId, $fingerprint) {
     $users = read_json_file($usersPath, ['by_hard_id' => [], 'by_fingerprint' => [], 'next_user_seq' => 1]);
 
     $mapping = null;
@@ -37,7 +48,7 @@ $result = with_file_lock($usersPath, function () use ($usersPath, $hardId, $fing
         $mapping = [
             'user_id' => $userId,
             'user_file' => 'user_' . $userId . '.json',
-            'chatlog_file' => 'chatlog_' . $userId . '.jsonl'
+            'chatlog_file' => 'chatlog_' . $userId . '.jsonl',
         ];
         $users['next_user_seq'] = $seq + 1;
         $isNew = true;
@@ -79,7 +90,7 @@ if (empty($state['active_topic']['topic_id'])) {
         'attempts' => 0,
         'mode' => 'normal',
         'pending_confirmation' => null,
-        'missing_info_hint' => null
+        'missing_info_hint' => null,
     ];
 }
 if (empty($state['stage_state']['group_id'])) {
@@ -94,9 +105,10 @@ if ($isNew && !empty($settings['greeting_first_visit_enabled'])) {
     $question = (($activeTopic['topic_id'] ?? '') === 'imie')
         ? 'Na start: jak masz na imię?'
         : (string)($activeTopic['micro_prompt'] ?? 'Od czego chcesz zacząć?');
-    $text = "Cześć! Tu Emma — bardzo się cieszę, że tu jesteś. Jestem Twoją doradczynią zawodową i pomogę Ci spokojnie poukładać pomysły na przyszłość. {$question}";
+    $text = 'Cześć! Tu Emma — bardzo się cieszę, że tu jesteś. Jestem Twoją doradczynią zawodową i pomogę Ci spokojnie poukładać pomysły na przyszłość. ' . $question;
     $preloaded[] = ['role' => 'assistant', 'text' => $text];
     append_chatlog($userId, [['ts' => $now, 'role' => 'assistant', 'text' => $text]]);
+    $state['first_seen_ts'] = $state['first_seen_ts'] ?? $now;
     $state['last_active_ts'] = $now;
 } elseif (!$isNew && !empty($settings['greeting_return_enabled'])) {
     $lastActive = (int)($state['last_active_ts'] ?? 0);
@@ -121,7 +133,7 @@ if ($isNew && !empty($settings['greeting_first_visit_enabled'])) {
         } else {
             $human = 'kilka godzin';
         }
-        $text = "Fajnie cię znowu widzieć — nie było cię {$human}. O czym dziś pogadamy? Mam parę pytań, żeby kontynuować temat: " . ($activeTopic['title'] ?? 'kolejny krok') . '.';
+        $text = 'Fajnie cię znowu widzieć — nie było cię ' . $human . '. O czym dziś pogadamy? Mam parę pytań, żeby kontynuować temat: ' . ($activeTopic['title'] ?? 'kolejny krok') . '.';
         $preloaded[] = ['role' => 'assistant', 'text' => $text];
         append_chatlog($userId, [['ts' => $now, 'role' => 'assistant', 'text' => $text]]);
         $state['last_active_ts'] = $now;
@@ -131,19 +143,21 @@ if ($isNew && !empty($settings['greeting_first_visit_enabled'])) {
 $state['last_session_start_ts'] = $now;
 atomic_write($userPath, json_encode($state, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT));
 
-$allLog = read_chatlog_lines($userId);
-$defaultLines = (int)($settings['show_chatlog_lines_default'] ?? 100);
-$messages = $loadAll ? $allLog : array_slice($allLog, -$defaultLines);
+$prompt = build_turn_prompt($settings, $topics, $state, '[INIT]');
+$ui = ui_payload($topics, $state, $prompt['prompt_debug_text'], $settings, $userId);
 
 json_response([
     'ok' => true,
     'user_id' => $userId,
     'preloaded_messages' => $preloaded,
-    'messages' => $messages,
-    'has_more' => count($allLog) > count($messages),
+    'chatlog_tail' => $ui['chatlog_tail'],
+    'has_more' => count(read_chatlog_lines($userId)) > count($ui['chatlog_tail']),
     'state' => $state,
+    'sidebar' => $ui['sidebar'],
+    'progress' => $ui['progress'],
+    'prompt_debug_text' => $ui['prompt_debug_text'],
     'settings' => [
-        'show_chatlog_lines_default' => $defaultLines,
-        'conversation_window_pairs' => (int)($settings['conversation_window_pairs'] ?? 5)
-    ]
+        'show_chatlog_lines_default' => (int)($settings['show_chatlog_lines_default'] ?? 100),
+        'conversation_window_pairs' => (int)($settings['conversation_window_pairs'] ?? 5),
+    ],
 ]);

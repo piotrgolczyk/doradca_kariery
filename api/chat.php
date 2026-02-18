@@ -23,125 +23,7 @@ if (!file_exists($userPath)) {
 }
 
 $state = read_json_file($userPath, []);
-$mainPrompt = trim((string)@file_get_contents(DATA_DIR . '/prompt_main.txt'));
-
-function pick_candidate_topics(array $topics, array $state): array {
-    $all = flatten_topics($topics);
-    $topicState = $state['topic_state'] ?? [];
-    $currentGroup = (string)($state['stage_state']['group_id'] ?? '');
-
-    $current = array_values(array_filter($all, function ($t) use ($currentGroup, $topicState) {
-        $status = $topicState[$t['topic_id']]['status'] ?? 'not_started';
-        return ($t['group_id'] ?? '') === $currentGroup && in_array($status, ['not_started', 'in_progress'], true);
-    }));
-    usort($current, fn($a, $b) => ($b['weight'] ?? 0) <=> ($a['weight'] ?? 0));
-
-    $previous = array_values(array_filter($all, function ($t) use ($currentGroup, $topicState) {
-        $status = $topicState[$t['topic_id']]['status'] ?? 'not_started';
-        return ($t['group_id'] ?? '') !== $currentGroup && in_array($status, ['not_started', 'in_progress'], true);
-    }));
-    shuffle($previous);
-
-    $wild = $all;
-    shuffle($wild);
-
-    $out = array_slice($current, 0, 7);
-    $out = array_merge($out, array_slice($previous, 0, 2), array_slice($wild, 0, 1));
-
-    $seen = [];
-    return array_values(array_filter($out, function ($t) use (&$seen) {
-        $id = $t['topic_id'];
-        if (isset($seen[$id])) return false;
-        $seen[$id] = true;
-        return true;
-    }));
-}
-
-function points_progress(array $topics, array $state): array {
-    $groupId = (string)($state['stage_state']['group_id'] ?? '');
-    $topicState = $state['topic_state'] ?? [];
-    $required = 0;
-    $collected = 0;
-    foreach ($topics['stages'] as $stage) {
-        foreach ($stage['groups'] as $group) {
-            if (($group['group_id'] ?? '') !== $groupId) continue;
-            $required = (int)($group['min_points_to_advance'] ?? 0);
-            foreach ($group['topics'] as $topic) {
-                if (($topicState[$topic['topic_id']]['status'] ?? '') === 'achieved') {
-                    $collected += (int)($topic['weight'] ?? 0);
-                }
-            }
-        }
-    }
-    return ['collected' => $collected, 'required' => $required, 'missing' => max(0, $required - $collected)];
-}
-
-$activeTopicId = (string)($state['active_topic']['topic_id'] ?? '');
-$activeRef = find_topic($topics, $activeTopicId) ?? find_topic($topics, get_first_topic($topics)[2]['topic_id']);
-$activeTopic = $activeRef['topic'];
-$topicStatus = $state['topic_state'][$activeTopic['topic_id']]['status'] ?? 'not_started';
-$candidateTopics = pick_candidate_topics($topics, $state);
-$progress = points_progress($topics, $state);
-
-$closedLimit = (int)($settings['closed_topics_prompt_limit'] ?? 25);
-$factsLimit = (int)($settings['profile_facts_limit'] ?? 30);
-$convPairs = (int)($settings['conversation_window_pairs'] ?? 5);
-
-$profileFacts = array_slice($state['profile_facts'] ?? [], -$factsLimit);
-$closed = array_slice($state['closed_topics_log'] ?? [], -$closedLimit);
-$window = array_slice($state['conversation_window'] ?? [], -$convPairs);
-
-$turnContext = [];
-$turnContext[] = "ACTIVE_TOPIC:";
-$turnContext[] = "topic_id: {$activeTopic['topic_id']}";
-$turnContext[] = "title: {$activeTopic['title']}";
-$turnContext[] = "goal: " . ($activeTopic['goal'] ?? '');
-$turnContext[] = "micro_prompt: " . ($activeTopic['micro_prompt'] ?? '');
-$turnContext[] = "status: {$topicStatus}";
-$turnContext[] = "attempts: " . (int)($state['active_topic']['attempts'] ?? 0);
-$turnContext[] = "missing_info_hint: " . (string)($state['active_topic']['missing_info_hint'] ?? '');
-$turnContext[] = "pending_confirmation: " . json_encode($state['active_topic']['pending_confirmation'] ?? null, JSON_UNESCAPED_UNICODE);
-$turnContext[] = "";
-$turnContext[] = "PROGRESS:";
-$turnContext[] = "stage_id: " . ($state['stage_state']['stage_id'] ?? '');
-$turnContext[] = "group_id: " . ($state['stage_state']['group_id'] ?? '');
-$turnContext[] = "points_collected: {$progress['collected']}";
-$turnContext[] = "points_required: {$progress['required']}";
-$turnContext[] = "points_missing: {$progress['missing']}";
-$turnContext[] = "";
-$turnContext[] = "PROFILE_FACTS:";
-foreach ($profileFacts as $fact) {
-    $turnContext[] = ($fact['fact_key'] ?? 'fact') . ': ' . ($fact['value'] ?? '');
-}
-$turnContext[] = "";
-$turnContext[] = "CLOSED_TOPICS:";
-foreach ($closed as $entry) {
-    $turnContext[] = ($entry['topic_id'] ?? '-') . ' | ' . ($entry['created_at'] ?? '') . ' | ' . ($entry['text'] ?? '');
-}
-$turnContext[] = "";
-$turnContext[] = "CONVERSATION_WINDOW:";
-foreach ($window as $pair) {
-    $turnContext[] = 'U: ' . ($pair['user'] ?? '');
-    $turnContext[] = 'A: ' . ($pair['assistant'] ?? '');
-    $turnContext[] = '---';
-}
-$turnContext[] = "";
-$turnContext[] = "CANDIDATE_TOPICS:";
-foreach ($candidateTopics as $ct) {
-    $turnContext[] = "topic_id: {$ct['topic_id']}";
-    $turnContext[] = "title: {$ct['title']}";
-    $turnContext[] = "weight: {$ct['weight']}";
-    $turnContext[] = "required: " . (($ct['required'] ?? false) ? 'true' : 'false');
-    $turnContext[] = "type: {$ct['type']}";
-    $turnContext[] = "goal: " . ($ct['goal'] ?? '');
-    $turnContext[] = "micro_prompt: " . ($ct['micro_prompt'] ?? '');
-    $turnContext[] = "";
-}
-$turnContext[] = "USER_MESSAGE:";
-$turnContext[] = $userMessage;
-
-$turnText = implode("\n", $turnContext);
-$fullPromptForPreview = "SYSTEM PROMPT:\n{$mainPrompt}\n\nTURN CONTEXT:\n{$turnText}";
+$prompt = build_turn_prompt($settings, $topics, $state, $userMessage);
 
 header('Content-Type: text/event-stream');
 header('Cache-Control: no-cache');
@@ -156,39 +38,52 @@ if ($apiKey === '') {
 }
 
 $apiBase = rtrim((string)($settings['openai_api_base'] ?? 'https://api.openai.com/v1'), '/');
-$model = (string)($settings['openai_model'] ?? 'gpt-4.1-mini');
+$model = (string)($settings['openai_model'] ?? 'gpt-5-mini');
+$effort = (string)($settings['openai_reasoning_effort'] ?? 'low');
 
 $payload = [
     'model' => $model,
+    'reasoning' => ['effort' => $effort],
     'stream' => true,
-    'messages' => [
-        ['role' => 'system', 'content' => $mainPrompt],
-        ['role' => 'user', 'content' => $turnText]
-    ]
+    'input' => [
+        ['role' => 'system', 'content' => [['type' => 'input_text', 'text' => $prompt['system_prompt']]]],
+        ['role' => 'user', 'content' => [['type' => 'input_text', 'text' => $prompt['turn_context']]]],
+    ],
 ];
 
 $assistantRaw = '';
 $buffer = '';
-$ch = curl_init($apiBase . '/chat/completions');
+$ch = curl_init($apiBase . '/responses');
 curl_setopt_array($ch, [
     CURLOPT_POST => true,
     CURLOPT_HTTPHEADER => [
         'Content-Type: application/json',
-        'Authorization: Bearer ' . $apiKey
+        'Authorization: Bearer ' . $apiKey,
     ],
     CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
-    CURLOPT_WRITEFUNCTION => function ($ch, $data) use (&$buffer, &$assistantRaw) {
+    CURLOPT_WRITEFUNCTION => static function ($ch, $data) use (&$buffer, &$assistantRaw) {
         $buffer .= $data;
         while (($pos = strpos($buffer, "\n")) !== false) {
             $line = trim(substr($buffer, 0, $pos));
             $buffer = substr($buffer, $pos + 1);
-            if ($line === '' || !str_starts_with($line, 'data:')) continue;
+            if ($line === '' || !str_starts_with($line, 'data:')) {
+                continue;
+            }
             $json = trim(substr($line, 5));
             if ($json === '[DONE]') {
                 return strlen($data);
             }
             $evt = json_decode($json, true);
-            $delta = $evt['choices'][0]['delta']['content'] ?? '';
+            if (!is_array($evt)) {
+                continue;
+            }
+            $type = (string)($evt['type'] ?? '');
+            $delta = '';
+            if ($type === 'response.output_text.delta') {
+                $delta = (string)($evt['delta'] ?? '');
+            } elseif ($type === 'response.output_text.done') {
+                $delta = (string)($evt['text'] ?? '');
+            }
             if ($delta !== '') {
                 $assistantRaw .= $delta;
                 echo 'data: ' . json_encode(['token' => $delta], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n\n";
@@ -219,55 +114,123 @@ if ($status >= 400) {
     exit;
 }
 
-$assistantText = $assistantRaw;
+$assistantText = trim($assistantRaw);
 $control = [
     'next_active_topic_id' => null,
     'active_topic_action' => 'continue',
     'events' => [],
-    'notes_to_add' => []
+    'notes_to_add' => [],
 ];
 if (str_contains($assistantRaw, '<<<CONTROL_JSON>>>')) {
     [$assistantTextPart, $controlPart] = explode('<<<CONTROL_JSON>>>', $assistantRaw, 2);
     $assistantText = trim($assistantTextPart);
     $parsed = json_decode(trim($controlPart), true);
     if (is_array($parsed)) {
-        $control = array_merge($control, $parsed);
+        $control = array_replace($control, $parsed);
     }
 }
 
 $now = time();
+$convPairs = (int)($settings['conversation_window_pairs'] ?? 5);
 $state['conversation_window'][] = ['ts' => $now, 'user' => $userMessage, 'assistant' => $assistantText];
 $state['conversation_window'] = array_slice($state['conversation_window'], -$convPairs);
 $state['last_active_ts'] = $now;
 $state['active_topic']['attempts'] = (int)($state['active_topic']['attempts'] ?? 0) + 1;
+$activeTopicId = (string)($state['active_topic']['topic_id'] ?? '');
+if ($activeTopicId !== '') {
+    $state['topic_state'][$activeTopicId]['status'] = $state['topic_state'][$activeTopicId]['status'] ?? 'in_progress';
+    $state['topic_state'][$activeTopicId]['attempts'] = (int)($state['topic_state'][$activeTopicId]['attempts'] ?? 0) + 1;
+}
+
+$summarizerPrompt = trim((string)file_get_contents(DATA_DIR . '/prompt_summarizer.txt'));
 
 foreach (($control['events'] ?? []) as $event) {
     if (($event['type'] ?? '') === 'topic_achieved' && !empty($event['topic_id'])) {
-        $tid = $event['topic_id'];
+        $tid = (string)$event['topic_id'];
         $state['topic_state'][$tid] = [
             'status' => 'achieved',
-            'attempts' => ($state['topic_state'][$tid]['attempts'] ?? 0) + 1,
-            'achieved_at' => $now
+            'attempts' => (int)($state['topic_state'][$tid]['attempts'] ?? 0),
+            'achieved_at' => $now,
         ];
         $topicRef = find_topic($topics, $tid);
-        if ($topicRef && ($topicRef['topic']['record_on_close'] ?? false)) {
-            $line = 'Domknięto temat: ' . ($topicRef['topic']['title'] ?? $tid);
-            $state['closed_topics_log'][] = ['topic_id' => $tid, 'created_at' => $now, 'text' => $line];
+        if ($topicRef) {
+            $oneLiner = mb_substr('Domknięto temat: ' . ($topicRef['topic']['title'] ?? $tid), 0, 140);
+            if (!empty($topicRef['topic']['record_on_close'])) {
+                $state['closed_topics_log'][] = ['topic_id' => $tid, 'created_at' => $now, 'text' => $oneLiner];
+            }
+            if (!empty($topicRef['topic']['fact_key'])) {
+                $factKey = (string)$topicRef['topic']['fact_key'];
+                $value = mb_substr($assistantText, 0, 120);
+                $existingIndex = null;
+                foreach (($state['profile_facts'] ?? []) as $idx => $fact) {
+                    if (($fact['fact_key'] ?? '') === $factKey) {
+                        $existingIndex = $idx;
+                        break;
+                    }
+                }
+                $newFact = [
+                    'fact_key' => $factKey,
+                    'value' => $value,
+                    'updated_at' => $now,
+                    'source_topic_id' => $tid,
+                    'confidence' => (float)($event['confidence'] ?? 0.6),
+                ];
+                if ($existingIndex === null) {
+                    $state['profile_facts'][] = $newFact;
+                } else {
+                    $oldValue = (string)($state['profile_facts'][$existingIndex]['value'] ?? '');
+                    if ($oldValue !== $value && !empty($topicRef['topic']['confirmation_required_on_change'])) {
+                        $state['active_topic']['mode'] = 'confirmation_pending';
+                        $state['active_topic']['pending_confirmation'] = [
+                            'fact_key' => $factKey,
+                            'old_value' => $oldValue,
+                            'new_value' => $value,
+                            'question' => 'Widzę inną wartość niż wcześniej. Czy chcesz zaktualizować tę informację?',
+                        ];
+                    } else {
+                        $state['profile_facts'][$existingIndex] = $newFact;
+                    }
+                }
+            }
         }
     }
+
     if (($event['type'] ?? '') === 'fact_change_proposed') {
         $state['active_topic']['mode'] = 'confirmation_pending';
         $state['active_topic']['pending_confirmation'] = [
             'fact_key' => $event['fact_key'] ?? '',
             'old_value' => $event['old_value'] ?? null,
             'new_value' => $event['new_value'] ?? '',
-            'question' => $event['question'] ?? 'Czy potwierdzasz zmianę?'
+            'question' => $event['question'] ?? 'Czy potwierdzasz zmianę?',
         ];
     }
 }
 
-$nextId = $control['next_active_topic_id'] ?? null;
-if (is_string($nextId) && $nextId !== '') {
+$maxAttempts = (int)($settings['max_attempts_before_switch'] ?? 2);
+if (($control['active_topic_action'] ?? 'continue') === 'switch' || (int)($state['active_topic']['attempts'] ?? 0) > $maxAttempts) {
+    $nextId = (string)($control['next_active_topic_id'] ?? '');
+    if ($nextId === '') {
+        foreach (pick_candidate_topics($topics, $state) as $candidate) {
+            if (($candidate['topic_id'] ?? '') !== $activeTopicId) {
+                $nextId = (string)$candidate['topic_id'];
+                break;
+            }
+        }
+    }
+    if ($nextId !== '') {
+        if ($activeTopicId !== '') {
+            $state['topic_state'][$activeTopicId]['status'] = $state['topic_state'][$activeTopicId]['status'] ?? 'in_progress';
+        }
+        $state['active_topic']['topic_id'] = $nextId;
+        $state['active_topic']['since'] = $now;
+        $state['active_topic']['attempts'] = 0;
+        $state['active_topic']['mode'] = 'normal';
+        $state['active_topic']['pending_confirmation'] = null;
+    }
+}
+
+$nextId = (string)($control['next_active_topic_id'] ?? '');
+if ($nextId !== '' && ($control['active_topic_action'] ?? 'continue') !== 'switch') {
     $state['active_topic']['topic_id'] = $nextId;
     $state['active_topic']['since'] = $now;
 }
@@ -275,16 +238,19 @@ if (is_string($nextId) && $nextId !== '') {
 atomic_write($userPath, json_encode($state, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT));
 append_chatlog($userId, [
     ['ts' => $now, 'role' => 'user', 'text' => $userMessage],
-    ['ts' => $now, 'role' => 'assistant', 'text' => $assistantText]
+    ['ts' => $now, 'role' => 'assistant', 'text' => $assistantText],
 ]);
+
+$ui = ui_payload($topics, $state, $prompt['prompt_debug_text'], $settings, $userId);
 
 echo "event: done\n";
 echo 'data: ' . json_encode([
     'assistant_text' => $assistantText,
     'control_json' => $control,
-    'state' => $state,
-    'prompt_preview' => $fullPromptForPreview,
-    'progress' => points_progress($topics, $state),
-    'candidate_topics' => array_slice($candidateTopics, 0, 3)
+    'sidebar' => $ui['sidebar'],
+    'progress' => $ui['progress'],
+    'prompt_debug_text' => $ui['prompt_debug_text'],
+    'chatlog_tail' => $ui['chatlog_tail'],
+    'summarizer_prompt_used' => $summarizerPrompt !== '',
 ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n\n";
 flush();
