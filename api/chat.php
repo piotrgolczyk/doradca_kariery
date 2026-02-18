@@ -38,6 +38,9 @@ $prompt = build_turn_prompt($settings, $topics, $state, $userMessage);
 header('Content-Type: text/event-stream');
 header('Cache-Control: no-cache');
 header('Connection: keep-alive');
+header('X-Accel-Buffering: no');
+while (ob_get_level() > 0) { ob_end_flush(); }
+ob_implicit_flush(true);
 
 $apiKey = trim((string)($settings['openai_api_key'] ?? ''));
 if ($apiKey === '') {
@@ -334,6 +337,85 @@ ASSISTANT_MESSAGE:
     ];
 }
 
+
+function compute_group_progress(array $groupMeta, array $topicState): array
+{
+    $required = (int)($groupMeta['min_points_to_advance'] ?? 0);
+    $collected = 0;
+    foreach (($groupMeta['topics'] ?? []) as $topic) {
+        $tid = (string)($topic['topic_id'] ?? '');
+        if ($tid !== '' && (($topicState[$tid]['status'] ?? '') === 'achieved')) {
+            $collected += (int)($topic['weight'] ?? 0);
+        }
+    }
+    return ['required' => $required, 'collected' => $collected];
+}
+
+function maybe_advance_group(array $topics, array &$state, int $now): ?array
+{
+    $stageId = (string)($state['stage_state']['stage_id'] ?? '');
+    $groupId = (string)($state['stage_state']['group_id'] ?? '');
+    if ($stageId === '' || $groupId === '') {
+        return null;
+    }
+
+    $currentGroup = find_group_meta($topics, $stageId, $groupId);
+    if (!$currentGroup) {
+        return null;
+    }
+
+    $progress = compute_group_progress($currentGroup, $state['topic_state'] ?? []);
+    if ($progress['collected'] < $progress['required']) {
+        return null;
+    }
+
+    $groups = ordered_groups($topics);
+    $currentIndex = null;
+    foreach ($groups as $idx => $g) {
+        if (($g['stage_id'] ?? '') === $stageId && ($g['group_id'] ?? '') === $groupId) {
+            $currentIndex = $idx;
+            break;
+        }
+    }
+    if ($currentIndex === null) {
+        return null;
+    }
+    $nextGroup = $groups[$currentIndex + 1] ?? null;
+    if (!$nextGroup) {
+        return null;
+    }
+
+    $summaryTopics = [];
+    foreach (($currentGroup['topics'] ?? []) as $topic) {
+        $tid = (string)($topic['topic_id'] ?? '');
+        if ($tid !== '' && (($state['topic_state'][$tid]['status'] ?? '') === 'achieved')) {
+            $summaryTopics[] = (string)($topic['title'] ?? $tid);
+        }
+    }
+
+    $state['stage_state']['stage_id'] = (string)$nextGroup['stage_id'];
+    $state['stage_state']['group_id'] = (string)$nextGroup['group_id'];
+    $firstTopicId = first_topic_id_in_group($nextGroup);
+    if ($firstTopicId) {
+        $state['active_topic']['topic_id'] = $firstTopicId;
+        $state['active_topic']['since'] = $now;
+        $state['active_topic']['attempts'] = 0;
+        $state['active_topic']['mode'] = 'normal';
+        $state['active_topic']['pending_confirmation'] = null;
+    }
+
+    $state['pending_transition_announcement'] = [
+        'from_group_title' => (string)($currentGroup['group_title'] ?? ''),
+        'to_group_title' => (string)($nextGroup['group_title'] ?? ''),
+        'achieved_topics' => array_slice($summaryTopics, -6),
+        'from_points' => $progress['collected'],
+        'required_points' => $progress['required'],
+        'created_at' => $now,
+    ];
+
+    return $state['pending_transition_announcement'];
+}
+
 function extract_assistant_and_control(string $assistantRaw): array
 {
     $control = [
@@ -612,6 +694,28 @@ foreach (($control['events'] ?? []) as $event) {
     }
 }
 
+
+$revisitTopicId = '';
+foreach (($control['events'] ?? []) as $event) {
+    if (($event['type'] ?? '') === 'user_requested_past_topic' && !empty($event['topic_id'])) {
+        $candidate = (string)$event['topic_id'];
+        if (find_topic($topics, $candidate)) {
+            $revisitTopicId = $candidate;
+            break;
+        }
+    }
+}
+if ($revisitTopicId !== '') {
+    $state['active_topic']['topic_id'] = $revisitTopicId;
+    $state['active_topic']['since'] = $now;
+    $state['active_topic']['attempts'] = 0;
+    $state['active_topic']['mode'] = 'normal';
+    $state['active_topic']['pending_confirmation'] = null;
+    $state['topic_state'][$revisitTopicId]['status'] = 'in_progress';
+}
+
+maybe_advance_group($topics, $state, $now);
+
 $maxAttempts = (int)($settings['max_attempts_before_switch'] ?? 2);
 if (($control['active_topic_action'] ?? 'continue') === 'switch' || (int)($state['active_topic']['attempts'] ?? 0) > $maxAttempts) {
     $nextId = (string)($control['next_active_topic_id'] ?? '');
@@ -650,6 +754,12 @@ append_chatlog($userId, [
 $ui = ui_payload($topics, $state, $prompt['prompt_debug_text'], $settings, $userId);
 
 echo "event: done\n";
+$pendingTransition = $state['pending_transition_announcement'] ?? null;
+if ($pendingTransition !== null) {
+    $state['pending_transition_announcement'] = null;
+    atomic_write($userPath, json_encode($state, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT));
+}
+
 echo 'data: ' . json_encode([
     'assistant_text' => $assistantText,
     'control_json' => $control,
@@ -659,5 +769,6 @@ echo 'data: ' . json_encode([
     'chatlog_tail' => $ui['chatlog_tail'],
     'summarizer_prompt_used' => $summarizerPrompt !== '',
     'backend_debug' => $backendDebug,
+    'pending_transition_announcement' => $pendingTransition,
 ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n\n";
 flush();

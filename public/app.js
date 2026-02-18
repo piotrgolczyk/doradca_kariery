@@ -113,6 +113,7 @@ function applyUiPayload(payload) {
 
   const p = payload.progress || {};
   $('points').textContent = `Zebrane: ${p.points_collected ?? 0} / ${p.points_required ?? 0}; Brakuje: ${p.points_missing ?? 0}`;
+  $('stageProgress').textContent = `Etap ${p.current_group_order ?? 1} z ${p.total_groups ?? 1}: ${p.current_group_title || '-'}${p.next_group_title ? ` → potem: ${p.next_group_title}` : ''}`;
 
   state.lastPrompt = payload.prompt_debug_text || state.lastPrompt;
   $('promptPreview').textContent = state.lastPrompt;
@@ -204,8 +205,17 @@ async function init() {
 
     state.userId = data.user_id;
     $('chat').innerHTML = '';
-    (data.chatlog_tail || []).forEach((m) => addMessage(m.role, m.text));
-    (data.preloaded_messages || []).forEach((m) => addMessage(m.role, m.text));
+    const tail = data.chatlog_tail || [];
+    tail.forEach((m) => addMessage(m.role, m.text));
+
+    const seen = new Set(tail.map((m) => `${m.role}::${m.text}`));
+    (data.preloaded_messages || []).forEach((m) => {
+      const key = `${m.role}::${m.text}`;
+      if (!seen.has(key)) {
+        addMessage(m.role, m.text);
+      }
+    });
+
     applyUiPayload(data);
     $('loadAll').style.display = data.has_more ? 'inline' : 'none';
     setApiStatus(true);
